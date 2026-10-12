@@ -71,3 +71,27 @@ Ikuti langkah-langkah berikut untuk menjalankan proyek ini di komputer Anda:
    ```bash
    git clone https://github.com/Gbrnd-ux/chat-app.git
    cd chat-app
+   
+2. Install dependencies:
+bash
+npm install
+# atau
+yarn install
+
+3. Setup Environment Variables:
+Salin file contoh dan isi dengan API Key Anda sendiri.
+bash
+cp .env.example .env.local
+Buka .env.local dan masukkan API Key Agnes AI Anda (dipisahkan dengan koma):
+env
+AGNES_API_KEYS=sk-key-akun1,sk-key-akun2,sk-key-akun3
+Catatan: Anda bisa mendapatkan API Key gratis di Agnes AI Platform.
+
+4. Jalankan development server:
+bash
+npm run dev
+
+5. Buka browser:
+Akses http://localhost:3000 untuk melihat hasilnya.
+
+
