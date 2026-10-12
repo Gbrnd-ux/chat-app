@@ -1,170 +1,112 @@
-// app/api/generate-video/agnes/route.ts
 import { NextRequest } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { Client } from "@gradio/client";
+
 export const maxDuration = 60;
 const MAX_PROMPT_CHARS = 1500;
-const HF_SPACE = "Upsampler/wan-2-2-14b-text-to-video";
+const MAX_KEYS_TO_TRY = 5; // Batas maksimal 5 akun untuk mencegah blokir IP
+const MAX_503_RETRIES = 2; // Maksimal 2 kali coba ulang jika server penuh
+
+const API_KEYS = (process.env.AGNES_API_KEYS || "").split(",").map(k => k.trim()).filter(k => k !== "");
+const AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1";
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for") ?? "anon";
   if (!checkRateLimit(ip)) {
-    return new Response(JSON.stringify({ error: "rate_limit" }), {
-      status: 429,
-      headers: { "Retry-After": "20", "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ error: "rate_limit" }), { status: 429 });
   }
 
   let body: { prompt?: string };
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
   }
 
   const prompt = (body.prompt ?? "").trim();
-  if (!prompt) {
-    return new Response(JSON.stringify({ error: "Prompt kosong" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-  if (prompt.length > MAX_PROMPT_CHARS) {
-    return new Response(JSON.stringify({ error: "Prompt terlalu panjang" }), {
-      status: 413,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  if (!prompt) return new Response(JSON.stringify({ error: "Prompt kosong" }), { status: 400 });
+  if (prompt.length > MAX_PROMPT_CHARS) return new Response(JSON.stringify({ error: "Prompt terlalu panjang" }), { status: 413 });
 
-  console.log(`[video] prompt: "${prompt.slice(0, 60)}"`);
+  // Acak urutan API Key dan ambil maksimal 5
+  const shuffledKeys = [...API_KEYS].sort(() => Math.random() - 0.5).slice(0, MAX_KEYS_TO_TRY);
+  let lastError = "";
 
-  try {
-    const client = await Client.connect(HF_SPACE, {
-      token: process.env.HF_TOKEN
-        ? (process.env.HF_TOKEN as `hf_${string}`)
-        : undefined,
-    });
+  for (const apiKey of shuffledKeys) {
+    let retries = 0;
+    let success = false;
 
-    console.log(`[video] connected`);
+    while (retries <= MAX_503_RETRIES && !success) {
+      try {
+        console.log(`[video] Mencoba key ${apiKey.slice(0, 8)}... (Percobaan ke-${retries + 1})`);
+        
+        const createResponse = await fetch(`${AGNES_BASE_URL}/videos`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "agnes-video-2.5-flash",
+            prompt: prompt,
+            seconds: "5",
+            mode: "text",
+            size: "720P",
+            aspect_ratio: "16:9",
+          }),
+        });
 
-    let paramNames: string[] = [];
-    try {
-      const apiInfo: any = await client.view_api();
-      const endpoint = apiInfo?.named_endpoints?.["/generate_video"];
-      if (endpoint?.parameters) {
-        paramNames = endpoint.parameters
-          .map((p: any) => p.parameter_name)
-          .filter((n: any) => typeof n === "string");
-        console.log(`[video] parameter names: [${paramNames.join(", ")}]`);
-      }
-    } catch (err: any) {
-      console.warn(`[video] view_api gagal: ${err.message}`);
-    }
-
-    const seed = Math.floor(Math.random() * 1_000_000);
-
-    const paramValues: Record<string, any> = {
-      prompt: prompt,
-      negative_prompt: "",
-      aspect_ratio: "16:9 (832x480)",
-      duration_seconds: 3.5,
-      steps: 4,
-      guidance_scale: 5,
-      guidance_scale_2: 5,
-      seed: seed,
-      randomize_seed: true,
-    };
-
-    let payload: any;
-    if (paramNames.length > 0) {
-      payload = {};
-      for (const name of paramNames) {
-        if (name in paramValues) {
-          payload[name] = paramValues[name];
-        } else {
-          const lower = name.toLowerCase();
-          if (lower.includes("seed") && lower.includes("random")) {
-            payload[name] = true;
-          } else if (lower.includes("seed")) {
-            payload[name] = seed;
-          } else if (lower.includes("prompt") && lower.includes("neg")) {
-            payload[name] = "";
-          } else {
-            payload[name] = null;
+        if (!createResponse.ok) {
+          const errorData = await createResponse.json().catch(() => ({}));
+          const errorMsg = JSON.stringify(errorData);
+          
+          // Jika server penuh (503), tunggu 5 detik dan coba lagi dengan key yang sama
+          if (createResponse.status === 503) {
+            console.warn(`[video] Server Agnes penuh. Menunggu 5 detik...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            retries++;
+            lastError = `Agnes API Error (503): ${errorMsg}`;
+            continue; // Lanjut ke iterasi while berikutnya (retry)
           }
+
+          // Jika limit/unauthorized (401/429), langsung pindah ke akun berikutnya
+          if (createResponse.status === 429 || createResponse.status === 401) {
+            console.warn(`[video] Key ${apiKey.slice(0, 8)} limit/unauthorized. Pindah akun...`);
+            lastError = `Agnes API Error (${createResponse.status}): ${errorMsg}`;
+            break; // Keluar dari while, lanjut ke for (akun berikutnya)
+          }
+
+          // Error lainnya (400, 500, dll)
+          throw new Error(`Agnes API Error (${createResponse.status}): ${errorMsg}`);
+        }
+
+        // Jika berhasil
+        const createData = await createResponse.json();
+        success = true;
+        
+        return new Response(JSON.stringify({ 
+          status: "processing", 
+          videoId: createData.video_id 
+        }), { headers: { "Content-Type": "application/json" } });
+
+      } catch (err: any) {
+        lastError = err.message;
+        // Jika error bukan karena limit/unauthorized, kita bisa langsung berhenti mencoba akun lain
+        if (!err.message.includes("429") && !err.message.includes("401")) {
+          return new Response(JSON.stringify({ error: "submit_failed", detail: err.message }), { status: 502 });
         }
       }
-      console.log(`[video] payload:`, JSON.stringify(payload));
-    } else {
-      payload = [prompt, "16:9 (832x480)", 4, "", 3.5, 5, 5, seed, true];
-      console.log(`[video] payload (positional):`, JSON.stringify(payload));
     }
-
-    console.log(`[video] memanggil /generate_video...`);
-    const result: any = await client.predict("/generate_video", payload);
-
-    const videoUrl = extractVideoUrl(result);
-    if (!videoUrl) {
-      throw new Error(`Response tidak berisi video`);
-    }
-
-    console.log(`[video] raw URL: ${videoUrl.slice(0, 100)}`);
-
-    // ✅ Bungkus URL HF dengan proxy kita
-    const proxiedUrl = `/api/video-proxy?url=${encodeURIComponent(videoUrl)}`;
-    console.log(`[video] proxied URL: ${proxiedUrl.slice(0, 120)}`);
-
-    return new Response(
-      JSON.stringify({
-        status: "completed",
-        videoUrl: proxiedUrl,
-        model: "wan-2.2-14b",
-        provider: "huggingface",
-      }),
-      { headers: { "Content-Type": "application/json" } }
-    );
-  } catch (err: any) {
-    console.error("[video] error:", err.message);
-
-    let userMessage = err.message;
-    if (err.message.includes("quota") || err.message.includes("ZeroGPU")) {
-      userMessage = "Kuota GPU gratis Hugging Face habis. Coba lagi nanti.";
-    } else if (err.message.includes("sleep") || err.message.includes("building")) {
-      userMessage = "Space HF sedang tidur/bangun. Coba lagi 30 detik.";
-    } else if (err.message.includes("401") || err.message.includes("Unauthorized")) {
-      userMessage = "HF_TOKEN tidak valid. Cek .env.local.";
-    } else if (err.message.includes("429")) {
-      userMessage = "Rate limit HF. Tunggu sebentar.";
-    }
-
-    return new Response(
-      JSON.stringify({ error: "submit_failed", detail: userMessage, raw: err.message }),
-      { status: 502, headers: { "Content-Type": "application/json" } }
-    );
-  }
-}
-
-function extractVideoUrl(result: any): string | null {
-  if (!result) return null;
-  if (typeof result === "string" && result.startsWith("http")) return result;
-
-  const data = result?.data ?? result;
-
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      const url = extractVideoUrl(item);
-      if (url) return url;
-    }
-    return null;
   }
 
-  if (data?.video?.url) return data.video.url;
-  if (typeof data?.url === "string" && data.url.startsWith("http")) return data.url;
-  if (typeof data?.path === "string" && data.path.startsWith("http")) return data.path;
-  if (typeof data?.value === "string" && data.value.startsWith("http")) return data.value;
+  // Jika semua 5 akun sudah dicoba dan gagal
+  let userMessage = "Terjadi kesalahan saat menghubungi Agnes AI.";
+  if (lastError.includes("503")) {
+    userMessage = "Server Agnes sedang penuh (antrean video penuh). Silakan coba lagi beberapa menit lagi.";
+  } else if (lastError.includes("429") || lastError.includes("401")) {
+    userMessage = "Server sedang limit. Silakan coba lagi nanti.";
+  }
 
-  return null;
+  return new Response(
+    JSON.stringify({ error: "submit_failed", detail: userMessage, raw: lastError }),
+    { status: 502, headers: { "Content-Type": "application/json" } }
+  );
 }
