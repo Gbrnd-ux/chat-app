@@ -69,5 +69,5 @@ Ikuti langkah-langkah berikut untuk menjalankan proyek ini di komputer Anda:
 
 1. **Clone repositori ini:**
    ```bash
-   git clone https://github.com/Gbrnd-ux/[nama-repo-anda].git
-   cd [nama-repo-anda]
+   git clone https://github.com/Gbrnd-ux/chat-app.git
+   cd chat-app
