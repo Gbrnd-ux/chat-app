@@ -1,97 +1,206 @@
 <div align="center">
-  <h1>🤖 AI Multimodal Chat</h1>
-  <p><b>Asynchronous AI Chat with Image, Video, and Document Generation</b></p>
-  
-  <p>
-    <img src="https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js" alt="Next.js" />
-    <img src="https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white" alt="Vercel" />
-  </p>
+  <img src="assets/banner.svg" width="100%" alt="AI Multimodal Chat, chat AI asinkron dengan generasi gambar, video, dan dokumen" />
 </div>
 
 <br/>
 
-## 📖 Tentang Proyek
-
-**AI Multimodal Chat** adalah aplikasi antarmuka obrolan cerdas yang tidak hanya bisa menjawab pertanyaan teks, tetapi juga dapat menghasilkan gambar, dokumen, dan video. Proyek ini dibangun untuk mendemonstrasikan arsitektur aplikasi AI modern yang tangguh, responsif, dan siap menghadapi batasan *serverless environment*.
-
-### 🖼️ Tampilan Aplikasi
-
-| Fitur Chat & Gambar | Fitur Video & Dokumen |
-| :---: | :---: |
-| *[Masukkan Screenshot UI Chat Anda di Sini]* | *[Masukkan Screenshot UI Video/Dokumen di Sini]* |
+<div align="center">
+  <img src="https://img.shields.io/badge/NEXT.JS-15-1a1a1a?style=for-the-badge&logo=next.js&logoColor=white&labelColor=0d0d0d" alt="Next.js 15" />
+  <img src="https://img.shields.io/badge/TYPESCRIPT-1a1a1a?style=for-the-badge&logo=typescript&logoColor=white&labelColor=0d0d0d" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/TAILWIND%20CSS-1a1a1a?style=for-the-badge&logo=tailwind-css&logoColor=white&labelColor=0d0d0d" alt="Tailwind CSS" />
+  <img src="https://img.shields.io/badge/STATUS-DEMO%20%2F%20BETA-1a1a1a?style=for-the-badge&labelColor=0d0d0d" alt="Status: Demo / Beta" />
+</div>
 
 <br/>
 
-## ✨ Fitur Utama
+<h2 align="center">ABOUT</h2>
 
-- **Multi-Modal Interface**: Dukungan untuk percakapan teks, generasi gambar, generasi video, dan pembuatan dokumen (Word/Excel).
-- **Modern Dark Mode UI**: Antarmuka pengguna yang bersih, responsif, dan nyaman digunakan (terinspirasi dari antarmuka AI terkemuka).
-- **Smart Error Handling**: Membedakan antara *rate limit*, *server down*, dan *invalid prompt*, lalu memberikan pesan yang jelas kepada pengguna.
-- **Secure Proxy**: Menggunakan API route internal untuk menyembunyikan URL eksternal dan menangani masalah CORS.
-
-<br/>
-
-## 🧠 Tantangan Teknis & Solusi (Technical Highlights)
-
-Ini adalah bagian terpenting dari proyek ini. Membuat UI itu mudah, tetapi membuatnya berjalan stabil di lingkungan produksi adalah tantangan tersendiri.
-
-### 1. Mengatasi Serverless Timeout (Asynchronous Polling)
-**Masalah:** Vercel (paket Hobby) memiliki batas waktu eksekusi fungsi maksimal 60 detik. Sementara itu, API pembuatan video (Agnes AI) dapat memakan waktu 5 hingga 15 menit untuk menyelesaikan satu video. Jika kita menunggu di backend, koneksi akan terputus.  
-**Solusi:** Saya merancang arsitektur **Fire-and-Forget**:
-- Backend hanya mengirim tugas ke Agnes AI, mendapatkan `videoId`, dan langsung mengembalikannya ke frontend (hanya butuh ~2 detik).
-- Frontend secara otomatis melakukan **polling** ke endpoint `/api/check-video` setiap 10 detik hingga statusnya `completed`.
-
-### 2. Multi-API Key Rotation (Resilience)
-**Masalah:** API gratis Agnes AI memiliki kuota harian dan batas rate limit. Jika satu akun habis, seluruh aplikasi akan macet.  
-**Solusi:** Saya menerapkan sistem rotasi API Key di backend. Sistem akan memilih secara acak maksimal **5 API Key** dari *environment variables*. Jika satu key terkena limit (401/429), sistem akan otomatis beralih ke key berikutnya tanpa membuat pengguna sadar.
-
-### 3. Video Proxy & Streaming
-**Masalah:** URL video dari Agnes AI seringkali memiliki batasan CORS dan masa kedaluwarsa yang singkat.  
-**Solusi:** Membuat endpoint `/api/video-proxy` yang memvalidasi domain (whitelist) dan meneruskan *streaming* video langsung dari server Agnes ke browser pengguna, mengurangi beban memori server.
+<p align="center">
+  <b>AI Multimodal Chat</b> adalah antarmuka obrolan cerdas yang tidak hanya menjawab teks,<br/>
+  tetapi juga menghasilkan <b>gambar</b>, <b>dokumen</b>, dan <b>video</b>.<br/><br/>
+  Proyek ini dibuat untuk mendemonstrasikan arsitektur aplikasi AI modern<br/>
+  yang responsif dan siap menghadapi batasan <i>serverless environment</i>.
+</p>
 
 <br/>
 
-## 🛠️ Tech Stack
+<h2 align="center">PREVIEW</h2>
 
-- **Framework**: [Next.js 15](https://nextjs.org/) (App Router)
-- **Language**: [TypeScript](https://www.typescriptlang.org/)
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
-- **AI Provider**: [Agnes AI](https://apihub.agnes-ai.com/) (Video Generation)
-- **Deployment**: [Vercel](https://vercel.com/)
+<table align="center" width="100%">
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <b>Chat &amp; Gambar</b><br/><br/>
+      <!-- Ganti dengan: <img src="assets/screenshot-chat.png" width="100%" alt="Fitur chat dan gambar" /> -->
+      <i>Screenshot UI chat</i>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <b>Video &amp; Dokumen</b><br/><br/>
+      <!-- Ganti dengan: <img src="assets/screenshot-video.png" width="100%" alt="Fitur video dan dokumen" /> -->
+      <i>Screenshot UI video dan dokumen</i>
+    </td>
+  </tr>
+</table>
 
 <br/>
 
-## 🚀 Cara Menjalankan Secara Lokal
+<h2 align="center">FEATURES</h2>
 
-Ikuti langkah-langkah berikut untuk menjalankan proyek ini di komputer Anda:
+<table align="center" width="100%">
+  <tr>
+    <td width="50%" valign="top">
+      <b>Multi-modal</b><br/>
+      Percakapan teks, generasi gambar, generasi video, dan pembuatan dokumen Word/Excel.
+    </td>
+    <td width="50%" valign="top">
+      <b>Dark mode UI</b><br/>
+      Antarmuka bersih, responsif, dan nyaman dipakai, terinspirasi dari aplikasi AI terkemuka.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <b>Smart error handling</b><br/>
+      Membedakan <i>rate limit</i>, <i>server down</i>, dan <i>invalid prompt</i>, lalu menampilkan pesan yang jelas.
+    </td>
+    <td width="50%" valign="top">
+      <b>Secure proxy</b><br/>
+      API route internal menyembunyikan URL eksternal dan menangani masalah CORS.
+    </td>
+  </tr>
+</table>
 
-1. **Clone repositori ini:**
-   ```bash
-   git clone https://github.com/Gbrnd-ux/chat-app.git
-   cd chat-app
-   
-2. Install dependencies:
-bash
+<br/>
+
+<h2 align="center">TECHNICAL HIGHLIGHTS</h2>
+
+<p align="center">
+  Membuat UI itu mudah. Membuatnya stabil di production adalah tantangan sebenarnya.
+</p>
+
+<div align="center">
+  <img src="assets/flow.svg" width="100%" alt="Alur Fire-and-Forget: frontend mengirim tugas, backend mengembalikan videoId, frontend polling status, video di-stream lewat proxy" />
+</div>
+
+<br/>
+
+<table align="center" width="100%">
+  <tr>
+    <td width="33%" valign="top">
+      <b>Asynchronous polling</b><br/><br/>
+      <b>Masalah:</b> Vercel paket Hobby membatasi fungsi maksimal 60 detik, sedangkan video Agnes AI butuh 5 sampai 15 menit.<br/><br/>
+      <b>Solusi:</b> arsitektur <i>Fire-and-Forget</i>. Backend hanya mengirim tugas dan langsung mengembalikan <code>videoId</code> (~2 detik). Frontend melakukan polling ke <code>/api/check-video</code> setiap 10 detik sampai status <code>completed</code>.
+    </td>
+    <td width="33%" valign="top">
+      <b>API key rotation</b><br/><br/>
+      <b>Masalah:</b> tier gratis Agnes AI punya kuota harian dan rate limit. Jika satu akun habis, aplikasi macet.<br/><br/>
+      <b>Solusi:</b> backend memilih acak maksimal 5 API key dari <i>environment variables</i>. Saat satu key terkena limit (401/429), sistem pindah ke key berikutnya tanpa disadari pengguna.
+    </td>
+    <td width="33%" valign="top">
+      <b>Video proxy &amp; streaming</b><br/><br/>
+      <b>Masalah:</b> URL video sering terkena batasan CORS dan cepat kedaluwarsa.<br/><br/>
+      <b>Solusi:</b> endpoint <code>/api/video-proxy</code> memvalidasi domain (whitelist) lalu meneruskan <i>stream</i> langsung dari server Agnes ke browser, sehingga beban memori server tetap kecil.
+    </td>
+  </tr>
+</table>
+
+<br/>
+
+<h2 align="center">TECH STACK</h2>
+
+<div align="center">
+  <img src="assets/stack.svg" width="100%" alt="Next.js 15, TypeScript, Tailwind CSS, Agnes AI, Vercel, Route Handlers, Polling, Key Rotation" />
+</div>
+
+<br/>
+
+<h2 align="center">GETTING STARTED</h2>
+
+**1. Clone repositori**
+
+```bash
+git clone https://github.com/Gbrnd-ux/chat-app.git
+cd chat-app
+```
+
+**2. Install dependencies**
+
+```bash
 npm install
 # atau
 yarn install
+```
 
-3. Setup Environment Variables:
-Salin file contoh dan isi dengan API Key Anda sendiri.
-bash
+**3. Siapkan environment variables**
+
+```bash
 cp .env.example .env.local
-Buka .env.local dan masukkan API Key Agnes AI Anda (dipisahkan dengan koma):
-env
+```
+
+Buka `.env.local`, lalu isi dengan API key [Agnes AI](https://apihub.agnes-ai.com/) milik Anda, dipisahkan dengan koma:
+
+```env
 AGNES_API_KEYS=sk-key-akun1,sk-key-akun2,sk-key-akun3
-Catatan: Anda bisa mendapatkan API Key gratis di Agnes AI Platform.
+```
 
-4. Jalankan development server:
-bash
+**4. Jalankan development server**
+
+```bash
 npm run dev
+```
 
-5. Buka browser:
-Akses http://localhost:3000 untuk melihat hasilnya.
+Buka [http://localhost:3000](http://localhost:3000) di browser.
 
+<br/>
 
+<h2 align="center">DISCLAIMER</h2>
+
+<p align="center">
+  Fitur video berstatus <b>DEMO / BETA</b> karena memakai API Agnes AI tier gratis.
+</p>
+
+<table align="center" width="100%">
+  <tr>
+    <td width="33%" valign="top">
+      <b>Waktu proses</b><br/>
+      Pembuatan video bisa memakan 5 sampai 15 menit, tergantung antrean server Agnes.
+    </td>
+    <td width="33%" valign="top">
+      <b>Antrean penuh</b><br/>
+      Server kadang mengembalikan error 503 (Queue Full). Aplikasi sudah punya retry otomatis; jika antrean benar-benar penuh, coba lagi beberapa menit kemudian.
+    </td>
+    <td width="33%" valign="top">
+      <b>Batas IP</b><br/>
+      Maksimal 5 API key dicoba per request untuk mencegah pemblokiran IP oleh Agnes AI.
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>Proyek ini dibuat murni untuk tujuan pembelajaran dan portofolio.</sub></p>
+
+<br/>
+
+<h2 align="center">CONTRIBUTING</h2>
+
+<p align="center">
+  Kontribusi terbuka untuk siapa saja.<br/>
+  Punya ide fitur atau perbaikan bug? Buka <a href="https://github.com/Gbrnd-ux/chat-app/issues">issue</a> atau kirim pull request.
+</p>
+
+<br/>
+
+<h2 align="center">LET'S CONNECT</h2>
+
+<p align="center">
+  <a href="mailto:gibrandpradana@gmail.com">
+    <img src="https://img.shields.io/badge/EMAIL-0d0d0d?style=for-the-badge&logo=gmail&logoColor=white" alt="Email" />
+  </a>
+  <a href="https://github.com/Gbrnd-ux">
+    <img src="https://img.shields.io/badge/GITHUB-0d0d0d?style=for-the-badge&logo=github&logoColor=white" alt="GitHub" />
+  </a>
+  <a href="https://instagram.com/gbrnd.d">
+    <img src="https://img.shields.io/badge/INSTAGRAM-0d0d0d?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram" />
+  </a>
+</p>
+
+<div align="center">
+  <img src="assets/footer.svg" width="100%" alt="Thanks for stopping by" />
+</div>
