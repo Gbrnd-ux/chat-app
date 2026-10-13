@@ -10,6 +10,8 @@ type Props = {
   onRegenerateImage: (messageId: string) => void;
   onEdit: (id: string, content: string) => void;
   typing?: boolean;
+  activeArtifactId?: string | null;
+  onOpenArtifact?: (messageId: string) => void;
 };
 
 export function MessageList({
@@ -19,6 +21,8 @@ export function MessageList({
   onRegenerateImage,
   onEdit,
   typing,
+  activeArtifactId,
+  onOpenArtifact,
 }: Props) {
   const { ref, pinned, jumpToBottom } = useAutoScroll<HTMLDivElement>([
     messages.length,
@@ -42,12 +46,12 @@ export function MessageList({
             onRegenerate={onRegenerate}
             onRegenerateImage={onRegenerateImage}
             onEdit={(c) => onEdit(m.id, c)}
+            activeArtifactId={activeArtifactId}
+            onOpenArtifact={onOpenArtifact}
           />
         ))}
         {typing && (
-          <div className="text-neutral-400 text-sm animate-pulse">
-            Sedang mengetik...
-          </div>
+          <div className="text-neutral-400 text-sm animate-pulse">Sedang mengetik...</div>
         )}
       </div>
 

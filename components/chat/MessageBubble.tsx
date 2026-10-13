@@ -12,17 +12,17 @@ type Props = {
   onRegenerateImage?: (messageId: string) => void;
   onEdit?: (newContent: string) => void;
   isLast?: boolean;
+  activeArtifactId?: string | null;
+  onOpenArtifact?: (messageId: string) => void;
 };
 
 function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString("id-ID", {
+  return new Date(ts).toLocaleTimeString("id-ID", {
     hour: "2-digit",
     minute: "2-digit",
   });
 }
 
-/** Rasio aspect → padding-top untuk skeleton */
 const ASPECT_PADDING: Record<string, string> = {
   "1:1": "100%",
   "16:9": "56.25%",
@@ -30,7 +30,6 @@ const ASPECT_PADDING: Record<string, string> = {
   "3:2": "66.67%",
 };
 
-/** Gambar dengan skeleton loading + error state */
 function ImageWithLoader({
   src,
   alt,
@@ -46,7 +45,6 @@ function ImageWithLoader({
 }) {
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [retryKey, setRetryKey] = useState(0);
-
   const padding = ASPECT_PADDING[aspect ?? "1:1"] ?? "100%";
 
   if (status === "error") {
@@ -58,9 +56,6 @@ function ImageWithLoader({
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4">
           <span className="text-2xl">🖼️</span>
           <p className="text-xs text-neutral-400">Gambar gagal dimuat</p>
-          <p className="text-[10px] text-neutral-600 max-w-[200px] truncate">
-            {src.slice(0, 60)}…
-          </p>
           <button
             onClick={() => {
               setStatus("loading");
@@ -83,16 +78,10 @@ function ImageWithLoader({
           style={{ paddingTop: padding }}
         >
           <div className="absolute inset-0 grid place-items-center">
-            <div className="flex flex-col items-center gap-2">
-              <div className="h-6 w-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-[11px] text-neutral-500">
-                Memuat gambar…
-              </span>
-            </div>
+            <div className="h-6 w-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
           </div>
         </div>
       )}
-
       <img
         key={retryKey}
         src={src}
@@ -100,30 +89,22 @@ function ImageWithLoader({
         onLoad={() => setStatus("loaded")}
         onError={() => setStatus("error")}
         onClick={onClick}
-        className={[
-          "w-auto max-w-full object-contain mx-auto rounded-lg",
-          status === "loaded" ? "block cursor-zoom-in hover:opacity-95" : "hidden",
-        ].join(" ")}
+        className={`w-auto max-w-full object-contain mx-auto rounded-lg ${
+          status === "loaded" ? "block cursor-zoom-in hover:opacity-95" : "hidden"
+        }`}
         style={{ maxHeight: `${maxHeight}px` }}
       />
     </div>
   );
 }
 
-/** Video dengan skeleton loading + error state */
 function VideoWithLoader({ src }: { src: string }) {
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
-
   return (
     <div className="relative w-full bg-black rounded-lg overflow-hidden aspect-video">
       {status === "loading" && (
         <div className="absolute inset-0 grid place-items-center z-10">
-          <div className="flex flex-col items-center gap-2">
-            <div className="h-6 w-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-            <span className="text-[11px] text-neutral-500">
-              Memuat video… (30–60 detik)
-            </span>
-          </div>
+          <div className="h-6 w-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
       <video
@@ -138,12 +119,7 @@ function VideoWithLoader({ src }: { src: string }) {
       {status === "error" && (
         <div className="absolute inset-0 grid place-items-center text-xs text-neutral-400 px-4 text-center">
           Gagal memuat video.{" "}
-          <a
-            href={src}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sky-400 underline ml-1"
-          >
+          <a href={src} target="_blank" rel="noopener noreferrer" className="text-sky-400 underline ml-1">
             Buka di tab baru
           </a>
         </div>
@@ -159,6 +135,8 @@ export const MessageBubble = memo(function MessageBubble({
   onRegenerateImage,
   onEdit,
   isLast,
+  activeArtifactId,
+  onOpenArtifact,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -167,6 +145,8 @@ export const MessageBubble = memo(function MessageBubble({
   const hasImages = (message.generatedImages?.length ?? 0) > 0;
   const hasVideos = (message.generatedVideos?.length ?? 0) > 0;
   const hasDocs = (message.generatedDocuments?.length ?? 0) > 0;
+  const hasUI = !!message.generatedUI;
+  const isArtifactActive = hasUI && activeArtifactId === message.id;
 
   const copy = async () => {
     const text = hasImages
@@ -175,13 +155,12 @@ export const MessageBubble = memo(function MessageBubble({
       ? message.generatedVideos![0].prompt
       : hasDocs
       ? message.generatedDocuments![0].prompt
+      : hasUI
+      ? message.generatedUI!.code
       : message.content;
     try {
       await navigator.clipboard.writeText(text);
-      showToast(
-        hasImages || hasVideos || hasDocs ? "Prompt tersalin" : "Tersalin",
-        "success"
-      );
+      showToast("Tersalin", "success");
     } catch {
       showToast("Gagal menyalin", "error");
     }
@@ -209,9 +188,7 @@ export const MessageBubble = memo(function MessageBubble({
     try {
       const byteChars = atob(base64);
       const byteArray = new Uint8Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) {
-        byteArray[i] = byteChars.charCodeAt(i);
-      }
+      for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
       const blob = new Blob([byteArray], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -244,7 +221,6 @@ export const MessageBubble = memo(function MessageBubble({
               : "bg-neutral-900 text-neutral-100 border border-neutral-800",
           ].join(" ")}
         >
-          {/* Lampiran user */}
           {isUser && message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {message.attachments.map((a) => (
@@ -253,7 +229,6 @@ export const MessageBubble = memo(function MessageBubble({
                   onClick={() => openLightbox(a.dataUrl, a.name)}
                   className="block rounded-lg overflow-hidden border border-white/20 hover:opacity-90"
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={a.dataUrl}
                     alt={a.name ?? "gambar"}
@@ -264,7 +239,6 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {/* Gambar hasil generate */}
           {hasImages && (
             <div className="flex flex-col gap-2 mb-2 w-full">
               {message.generatedImages!.map((g) => (
@@ -272,19 +246,16 @@ export const MessageBubble = memo(function MessageBubble({
                   key={g.id}
                   className="rounded-xl overflow-hidden border border-neutral-700 bg-neutral-950 w-full"
                 >
-                  <div className="w-full">
-                    <ImageWithLoader
-                      src={g.dataUrl}
-                      alt={g.prompt}
-                      aspect={g.aspect}
-                      onClick={() => openLightbox(g.dataUrl, g.prompt)}
-                    />
-                  </div>
+                  <ImageWithLoader
+                    src={g.dataUrl}
+                    alt={g.prompt}
+                    aspect={g.aspect}
+                    onClick={() => openLightbox(g.dataUrl, g.prompt)}
+                  />
                   <div className="flex items-center justify-between px-3 py-2 border-t border-neutral-800 bg-neutral-900/60 gap-2">
                     <span className="text-[11px] text-neutral-500 font-mono truncate">
                       {g.provider} · {g.model}
                       {typeof g.seed === "number" && ` · seed ${g.seed}`}
-                      {g.aspect && ` · ${g.aspect}`}
                     </span>
                     <div className="flex gap-2 shrink-0">
                       <button
@@ -308,7 +279,6 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {/* Video hasil generate */}
           {hasVideos && (
             <div className="flex flex-col gap-2 mb-2 w-full">
               {message.generatedVideos!.map((v) => (
@@ -317,26 +287,11 @@ export const MessageBubble = memo(function MessageBubble({
                   className="rounded-xl overflow-hidden border border-neutral-700 bg-neutral-950 w-full"
                 >
                   <VideoWithLoader src={v.videoUrl} />
-                  <div className="flex items-center justify-between px-3 py-2 border-t border-neutral-800 bg-neutral-900/60 gap-2">
-                    <span className="text-[11px] text-neutral-500 font-mono truncate">
-                      {v.provider} · {v.model}
-                    </span>
-                    <a
-                      href={v.videoUrl}
-                      download
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] px-2 py-1 rounded hover:bg-neutral-800 text-neutral-300 shrink-0"
-                    >
-                      Download
-                    </a>
-                  </div>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Dokumen hasil generate */}
           {hasDocs && (
             <div className="flex flex-col gap-2 mb-2 w-full">
               {message.generatedDocuments!.map((d) => (
@@ -345,19 +300,16 @@ export const MessageBubble = memo(function MessageBubble({
                   className="rounded-xl overflow-hidden border border-neutral-700 bg-neutral-950 p-3 flex items-center gap-3"
                 >
                   <div
-                    className={[
-                      "h-10 w-10 rounded-lg grid place-items-center text-lg shrink-0",
+                    className={`h-10 w-10 rounded-lg grid place-items-center text-lg shrink-0 ${
                       d.docType === "word"
                         ? "bg-blue-600/20 text-blue-400"
-                        : "bg-emerald-600/20 text-emerald-400",
-                    ].join(" ")}
+                        : "bg-emerald-600/20 text-emerald-400"
+                    }`}
                   >
                     {d.docType === "word" ? "📄" : "📊"}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-neutral-100 truncate font-medium">
-                      {d.fileName}
-                    </p>
+                    <p className="text-sm text-neutral-100 truncate font-medium">{d.fileName}</p>
                     <p className="text-[11px] text-neutral-500 font-mono">
                       {(d.size / 1024).toFixed(1)} KB · {d.docType.toUpperCase()}
                     </p>
@@ -373,8 +325,34 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
+          {/* 👇 ARTIFACT CHIP: Kartu kecil untuk buka panel kanan */}
+          {hasUI && (
+            <button
+              onClick={() => onOpenArtifact?.(message.id)}
+              className={`mt-3 w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
+                isArtifactActive
+                  ? "border-sky-500/60 bg-sky-500/10"
+                  : "border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/10"
+              }`}
+            >
+              <div className="h-9 w-9 rounded-lg grid place-items-center bg-sky-500/20 text-sky-400 shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <path d="M3 9h18M9 21V9" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-neutral-100 truncate">UI Artifact</p>
+                <p className="text-[11px] text-neutral-500 truncate">{message.generatedUI!.prompt}</p>
+              </div>
+              <span className="text-[11px] text-sky-400 shrink-0 font-medium">
+                {isArtifactActive ? "Aktif" : "Buka →"}
+              </span>
+            </button>
+          )}
+
           {editing ? (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 mt-2">
               <textarea
                 className="w-full rounded bg-neutral-800 p-2 text-sm"
                 value={draft}
@@ -403,61 +381,50 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             </div>
           ) : isUser ? (
-            message.content ? (
-              <p className="whitespace-pre-wrap">{message.content}</p>
-            ) : null
-          ) : message.content ? (
+            message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : null
+          ) : (
             <>
-              <Markdown content={message.content} />
-              {streaming && (
+              {hasUI ? (
+                <p className="mt-2">{message.content || "Berikut adalah UI yang Anda minta:"}</p>
+              ) : message.content ? (
+                <Markdown content={message.content} />
+              ) : null}
+
+              {streaming && message.content.includes("Sedang merancang UI") && (
+                <div className="flex items-center gap-2 mt-2 text-neutral-400 text-sm">
+                  <div className="flex gap-1">
+                    <div className="h-1.5 w-1.5 bg-sky-400 rounded-full animate-bounce" />
+                    <div className="h-1.5 w-1.5 bg-sky-400 rounded-full animate-bounce [animation-delay:-.3s]" />
+                    <div className="h-1.5 w-1.5 bg-sky-400 rounded-full animate-bounce [animation-delay:-.5s]" />
+                  </div>
+                  <span>AI sedang menulis kode HTML...</span>
+                </div>
+              )}
+
+              {streaming && !message.content.includes("Sedang merancang UI") && (
                 <span className="inline-block w-2 h-4 align-middle bg-sky-400 animate-pulse ml-0.5" />
               )}
             </>
-          ) : streaming ? (
-            <span className="inline-block w-2 h-4 align-middle bg-sky-400 animate-pulse ml-0.5" />
-          ) : null}
+          )}
 
-          {/* Badge model teks */}
-          {!streaming &&
-            !hasImages &&
-            !hasVideos &&
-            !hasDocs &&
-            message.model &&
-            message.model !== "…" && (
-              <div className="mt-2 text-[10px] uppercase tracking-wider text-neutral-500 font-mono">
-                {message.provider} · {message.model}
-              </div>
-            )}
-
-          {/* Action row */}
           {!streaming &&
             !editing &&
+            !hasUI &&
             (message.content || hasImages || hasVideos || hasDocs) && (
               <div className="mt-2 flex gap-3 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 transition">
                 <button onClick={copy} className="hover:text-neutral-200">
-                  {hasImages || hasVideos || hasDocs ? "Copy prompt" : "Copy"}
+                  Copy
                 </button>
                 {isUser && (
-                  <button
-                    onClick={() => setEditing(true)}
-                    className="hover:text-neutral-200"
-                  >
+                  <button onClick={() => setEditing(true)} className="hover:text-neutral-200">
                     Edit
                   </button>
                 )}
-                {!isUser &&
-                  isLast &&
-                  onRegenerate &&
-                  !hasImages &&
-                  !hasVideos &&
-                  !hasDocs && (
-                    <button
-                      onClick={onRegenerate}
-                      className="hover:text-neutral-200"
-                    >
-                      Regenerate
-                    </button>
-                  )}
+                {!isUser && isLast && onRegenerate && !hasImages && !hasVideos && !hasDocs && (
+                  <button onClick={onRegenerate} className="hover:text-neutral-200">
+                    Regenerate
+                  </button>
+                )}
               </div>
             )}
         </div>

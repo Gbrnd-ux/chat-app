@@ -3,23 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MessageList } from "@/components/chat/MessageList";
-import {
-  Composer,
-  ComposerMode,
-  AspectRatio,
-  DocType,
-} from "@/components/chat/Composer";
+import { ArtifactPanel } from "@/components/chat/ArtifactPanel";
+import { Composer, ComposerMode, AspectRatio, DocType } from "@/components/chat/Composer";
 import { EmptyState } from "@/components/chat/EmptyState";
 import { showToast } from "@/lib/toast";
-import {
-  Attachment,
-  Conversation,
-  ChatMessage,
-  loadAll,
-  upsert,
-  remove,
-  newId,
-} from "@/lib/storage";
+import { Attachment, Conversation, ChatMessage, loadAll, upsert, remove, newId } from "@/lib/storage";
+import { extractHtml, isCompleteHtml } from "@/lib/ui-output";
 
 function toApiMessages(history: ChatMessage[]) {
   return history.map((m) => {
@@ -30,10 +19,7 @@ function toApiMessages(history: ChatMessage[]) {
       role: m.role,
       content: [
         { type: "text", text: m.content || " " },
-        ...m.attachments.map((a) => ({
-          type: "image_url",
-          image_url: { url: a.dataUrl },
-        })),
+        ...m.attachments.map((a) => ({ type: "image_url", image_url: { url: a.dataUrl } })),
       ],
     };
   });
@@ -56,21 +42,17 @@ export default function Home() {
   const [videoStatus, setVideoStatus] = useState<string>("");
   const [docLoading, setDocLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [artifactOpen, setArtifactOpen] = useState(false);
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
+
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const abortRef = useRef<AbortController | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const videoPollRef = useRef<number | null>(null);
 
-  // ✅ Ref untuk track activeId terkini (bisa diakses di async)
   const activeIdRef = useRef<string>(activeId);
-  useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
-
-  useEffect(() => {
-    setConvs(loadAll());
-  }, []);
-
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { setConvs(loadAll()); }, []);
   useEffect(() => {
     return () => {
       if (videoPollRef.current) clearTimeout(videoPollRef.current);
@@ -78,8 +60,8 @@ export default function Home() {
   }, []);
 
   const activeConv = convs.find((c) => c.id === activeId);
+  const activeArtifact = messages.find((m) => m.id === activeArtifactId && m.generatedUI);
 
-  /** Cancel semua operasi async yang sedang jalan */
   const cancelAll = () => {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -105,33 +87,23 @@ export default function Home() {
     setAttachments([]);
     setActiveModel("");
     setMode("chat");
+    setArtifactOpen(false);
+    setActiveArtifactId(null);
   };
 
-  const persist = useCallback(
-    (msgs: ChatMessage[], id: string) => {
-      if (!id) return;
-      const firstUser = msgs.find((m) => m.role === "user");
-      const title =
-        firstUser?.content.slice(0, 40) ||
-        (firstUser?.attachments?.length ? "Analisis gambar" : "Baru");
-      const conv: Conversation = {
-        id,
-        title,
-        updatedAt: Date.now(),
-        messages: msgs,
-      };
-      upsert(conv);
-      setConvs(loadAll());
-    },
-    []
-  );
+  const persist = useCallback((msgs: ChatMessage[], id: string) => {
+    if (!id) return;
+    const firstUser = msgs.find((m) => m.role === "user");
+    const title = firstUser?.content.slice(0, 40) || (firstUser?.attachments?.length ? "Analisis gambar" : "Baru");
+    const conv: Conversation = { id, title, updatedAt: Date.now(), messages: msgs };
+    upsert(conv);
+    setConvs(loadAll());
+  }, []);
 
-  /** Cek apakah saat ini masih di conversation yang sama */
-  const stillHere = (conversationId: string) =>
-    activeIdRef.current === conversationId;
+  const stillHere = (conversationId: string) => activeIdRef.current === conversationId;
 
   // ============================================================
-  // CHAT STREAMING
+  // CHAT STREAMING (DENGAN FALLBACK HTML DETECTION)
   // ============================================================
   const runStream = useCallback(
     async (history: ChatMessage[], conversationId: string) => {
@@ -145,7 +117,6 @@ export default function Home() {
         createdAt: Date.now(),
       };
 
-      // Tambah placeholder hanya kalau masih di chat yang sama
       if (stillHere(conversationId)) {
         setMessages((prev) => [...prev, assistantMsg]);
       }
@@ -166,6 +137,9 @@ export default function Home() {
 
         const modelUsed = res.headers.get("X-Model-Used") ?? undefined;
         const providerUsed = res.headers.get("X-Provider-Used") ?? undefined;
+        const modeHeader = res.headers.get("X-Mode");
+        // Variable mutable supaya bisa di-update oleh fallback
+        let isUIMode = modeHeader === "ui";
 
         if (stillHere(conversationId)) {
           if (modelUsed) setActiveModel(`${providerUsed ?? "?"} · ${modelUsed}`);
@@ -189,22 +163,56 @@ export default function Home() {
           acc += decoder.decode(value, { stream: true });
 
           if (stillHere(conversationId)) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId ? { ...m, content: acc } : m
-              )
-            );
+            if (isUIMode) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, content: "🎨 Sedang merancang UI..." }
+                    : m
+                )
+              );
+            } else {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: acc } : m
+                )
+              );
+            }
             setTyping(false);
           }
         }
 
-        // ✅ Reconstruct dari data mentah (bukan state) → aman kalau user pindah chat
+        // 🔥 FALLBACK: Kalau backend salah deteksi mode, tapi AI tetap menghasilkan HTML lengkap
+        if (!isUIMode && acc.includes("<!DOCTYPE html>") && acc.includes("</html>")) {
+          console.log("[frontend] Fallback: mendeteksi HTML lengkap dari output AI");
+          isUIMode = true;
+        }
+
         const finalAssistant: ChatMessage = {
           ...assistantMsg,
-          content: acc,
+          content: isUIMode ? "Berikut adalah UI yang Anda minta:" : acc,
           model: modelUsed,
           provider: providerUsed,
         };
+
+        if (isUIMode) {
+          const cleanCode = extractHtml(acc);
+          if (isCompleteHtml(cleanCode)) {
+            finalAssistant.content = "Berikut adalah UI yang Anda minta:";
+            finalAssistant.generatedUI = {
+              code: cleanCode,
+              prompt: history[history.length - 1].content,
+            };
+            // Auto-buka panel kanan
+            if (stillHere(conversationId)) {
+              setActiveArtifactId(assistantId);
+              setArtifactOpen(true);
+            }
+          } else {
+            finalAssistant.content = "⚠️ Gagal menghasilkan UI yang lengkap. Silakan coba lagi.";
+          }
+        }
+
         const finalMsgs = [...history, finalAssistant];
         persist(finalMsgs, conversationId);
 
@@ -214,12 +222,10 @@ export default function Home() {
         }
       } catch (err: any) {
         if (err.name === "AbortError") return;
-
         const msg =
           err.message === "HTTP 429"
-            ? "Terlalu banyak permintaan. Tunggu sekitar 20 detik lalu coba lagi."
-            : "Koneksi terputus. Periksa jaringanmu dan coba lagi.";
-
+            ? "Terlalu banyak permintaan. Tunggu sekitar 20 detik."
+            : "Koneksi terputus.";
         const errMsg: ChatMessage = {
           id: newId(),
           role: "assistant",
@@ -237,9 +243,7 @@ export default function Home() {
         }
       } finally {
         abortRef.current = null;
-        if (stillHere(conversationId)) {
-          composerRef.current?.focus();
-        }
+        if (stillHere(conversationId)) composerRef.current?.focus();
       }
     },
     [persist]
@@ -249,12 +253,7 @@ export default function Home() {
   // IMAGE
   // ============================================================
   const generateImage = async (prompt: string, conversationId: string) => {
-    const userMsg: ChatMessage = {
-      id: newId(),
-      role: "user",
-      content: prompt,
-      createdAt: Date.now(),
-    };
+    const userMsg: ChatMessage = { id: newId(), role: "user", content: prompt, createdAt: Date.now() };
     const placeholderId = newId();
     const placeholder: ChatMessage = {
       id: placeholderId,
@@ -279,15 +278,12 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, aspect }),
       });
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
       }
-
       const data = await res.json();
       const { dataUrl, model, provider, seed } = data;
-
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
@@ -308,7 +304,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, finalAssistant];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         setActiveModel(`${provider} · ${model}`);
@@ -323,7 +318,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         showToast("Gagal membuat gambar", "error");
@@ -337,12 +331,7 @@ export default function Home() {
   // VIDEO
   // ============================================================
   const generateVideo = async (prompt: string, conversationId: string) => {
-    const userMsg: ChatMessage = {
-      id: newId(),
-      role: "user",
-      content: prompt,
-      createdAt: Date.now(),
-    };
+    const userMsg: ChatMessage = { id: newId(), role: "user", content: prompt, createdAt: Date.now() };
     const placeholderId = newId();
     const placeholder: ChatMessage = {
       id: placeholderId,
@@ -366,24 +355,16 @@ export default function Home() {
       const res = await fetch("/api/generate-video/agnes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          aspect: "16:9 (832x480)",
-          duration: 3.5,
-        }),
+        body: JSON.stringify({ prompt, aspect: "16:9 (832x480)", duration: 3.5 }),
       });
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
       }
-
       const data = await res.json();
-
       if (data.status !== "completed" || !data.videoUrl) {
         throw new Error("Response tidak berisi video");
       }
-
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
@@ -402,7 +383,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, finalAssistant];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         setActiveModel(`${data.provider} · ${data.model}`);
@@ -417,7 +397,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         showToast("Gagal membuat video", "error");
@@ -434,12 +413,7 @@ export default function Home() {
   // DOCUMENT
   // ============================================================
   const generateDocument = async (prompt: string, conversationId: string) => {
-    const userMsg: ChatMessage = {
-      id: newId(),
-      role: "user",
-      content: prompt,
-      createdAt: Date.now(),
-    };
+    const userMsg: ChatMessage = { id: newId(), role: "user", content: prompt, createdAt: Date.now() };
     const placeholderId = newId();
     const placeholder: ChatMessage = {
       id: placeholderId,
@@ -464,15 +438,12 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, type: docType }),
       });
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
       }
-
       const data = await res.json();
       const { fileName, mimeType, base64, size } = data;
-
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
@@ -493,7 +464,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, finalAssistant];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         setActiveModel(`local · ${docType}`);
@@ -528,7 +498,6 @@ export default function Home() {
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
         showToast("Gagal membuat dokumen", "error");
@@ -544,10 +513,8 @@ export default function Home() {
   const regenerateImage = async (messageId: string) => {
     const conversationId = activeId;
     if (!conversationId) return;
-
     const msg = messages.find((m) => m.id === messageId);
     if (!msg || !msg.generatedImages?.length) return;
-
     const prevImg = msg.generatedImages[0];
     const keepAspect = (prevImg.aspect as AspectRatio) ?? "1:1";
     showToast("Membuat variasi baru…", "info");
@@ -556,21 +523,14 @@ export default function Home() {
       const res = await fetch("/api/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: prevImg.prompt,
-          aspect: keepAspect,
-        }),
+        body: JSON.stringify({ prompt: prevImg.prompt, aspect: keepAspect }),
       });
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
       }
-
       const data = await res.json();
       const { dataUrl, model, provider, seed } = data;
-
-      // Reconstruct dari data mentah, jangan dari state
       const updated = messages.map((m) =>
         m.id === messageId
           ? {
@@ -593,15 +553,12 @@ export default function Home() {
           : m
       );
       persist(updated, conversationId);
-
       if (stillHere(conversationId)) {
         setMessages(updated);
         showToast("Variasi baru siap", "success");
       }
     } catch (err: any) {
-      if (stillHere(conversationId)) {
-        showToast(`Gagal: ${err.message}`, "error");
-      }
+      if (stillHere(conversationId)) showToast(`Gagal: ${err.message}`, "error");
     }
   };
 
@@ -611,8 +568,6 @@ export default function Home() {
   const send = () => {
     const text = input.trim();
     if (!text) return;
-
-    // ✅ Capture conversationId di awal
     let id = activeId;
     if (!id) {
       id = newId();
@@ -620,21 +575,9 @@ export default function Home() {
       activeIdRef.current = id;
     }
 
-    if (mode === "image") {
-      generateImage(text, id);
-      setInput("");
-      return;
-    }
-    if (mode === "video") {
-      generateVideo(text, id);
-      setInput("");
-      return;
-    }
-    if (mode === "document") {
-      generateDocument(text, id);
-      setInput("");
-      return;
-    }
+    if (mode === "image") { generateImage(text, id); setInput(""); return; }
+    if (mode === "video") { generateVideo(text, id); setInput(""); return; }
+    if (mode === "document") { generateDocument(text, id); setInput(""); return; }
 
     const userMsg: ChatMessage = {
       id: newId(),
@@ -645,15 +588,10 @@ export default function Home() {
     };
     const next = [...messages, userMsg];
 
-    if (stillHere(id)) {
-      setMessages(next);
-    }
+    if (stillHere(id)) setMessages(next);
     setInput("");
     setAttachments([]);
-
-    // ✅ Persist user message langsung (sebelum stream mulai)
     persist(next, id);
-
     runStream(next, id);
   };
 
@@ -677,9 +615,9 @@ export default function Home() {
     if (!conversationId) return;
     const idx = messages.findIndex((m) => m.id === id);
     if (idx < 0) return;
-    const trimmed = messages.slice(0, idx + 1).map((m) =>
-      m.id === id ? { ...m, content } : m
-    );
+    const trimmed = messages
+      .slice(0, idx + 1)
+      .map((m) => (m.id === id ? { ...m, content } : m));
     if (stillHere(conversationId)) setMessages(trimmed);
     persist(trimmed, conversationId);
     runStream(trimmed, conversationId);
@@ -703,6 +641,16 @@ export default function Home() {
         ? `${lastAssistant.provider ?? "?"} · ${lastAssistant.model}`
         : ""
     );
+
+    // Auto-buka artifact terakhir jika ada
+    const lastUI = [...c.messages].reverse().find((m) => m.generatedUI);
+    if (lastUI) {
+      setActiveArtifactId(lastUI.id);
+      setArtifactOpen(true);
+    } else {
+      setActiveArtifactId(null);
+      setArtifactOpen(false);
+    }
   };
 
   const deleteConv = (id: string) => {
@@ -715,8 +663,15 @@ export default function Home() {
       setMessages([]);
       setAttachments([]);
       setActiveModel("");
+      setArtifactOpen(false);
+      setActiveArtifactId(null);
     }
     showToast("Percakapan dihapus", "info");
+  };
+
+  const handleOpenArtifact = (messageId: string) => {
+    setActiveArtifactId(messageId);
+    setArtifactOpen(true);
   };
 
   return (
@@ -734,22 +689,15 @@ export default function Home() {
       {!isDesktop && sidebarOpen && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-[fadeIn_0.15s_ease-out]"
+            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Tutup sidebar"
           />
-          <div className="fixed inset-y-0 left-0 z-50 shadow-2xl animate-[slideInLeft_0.2s_ease-out]">
+          <div className="fixed inset-y-0 left-0 z-50 shadow-2xl">
             <Sidebar
               items={convs}
               activeId={activeId}
-              onNew={() => {
-                startNew();
-                setSidebarOpen(false);
-              }}
-              onSelect={(id) => {
-                selectConv(id);
-                setSidebarOpen(false);
-              }}
+              onNew={() => { startNew(); setSidebarOpen(false); }}
+              onSelect={(id) => { selectConv(id); setSidebarOpen(false); }}
               onDelete={deleteConv}
               onClose={() => setSidebarOpen(false)}
             />
@@ -757,78 +705,101 @@ export default function Home() {
         </>
       )}
 
-      <main className="flex-1 flex flex-col min-w-0">
-        <header className="h-12 border-b border-neutral-800 flex items-center px-3 md:px-4 text-sm text-neutral-400 gap-3">
-          {!isDesktop && (
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="rounded-lg p-1.5 hover:bg-neutral-800 text-neutral-300 shrink-0"
-              aria-label="Buka sidebar"
-            >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
+      <div className="flex-1 flex min-w-0">
+        <main className="flex-1 flex flex-col min-w-0">
+          <header className="h-12 border-b border-neutral-800 flex items-center px-3 md:px-4 text-sm text-neutral-400 gap-3">
+            {!isDesktop && (
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="rounded-lg p-1.5 hover:bg-neutral-800 text-neutral-300 shrink-0"
+                aria-label="Buka sidebar"
               >
-                <line x1="3" y1="6" x2="21" y2="6" />
-                <line x1="3" y1="12" x2="21" y2="12" />
-                <line x1="3" y1="18" x2="21" y2="18" />
-              </svg>
-            </button>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+            )}
+            <span className="truncate">{activeConv?.title || "Chat baru"}</span>
+            {activeArtifact && !artifactOpen && (
+              <button
+                onClick={() => setArtifactOpen(true)}
+                className="ml-auto shrink-0 text-[11px] px-2.5 py-1 rounded-md bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 transition"
+              >
+                🎨 Buka UI
+              </button>
+            )}
+            {videoLoading && videoStatus && (
+              <span className="ml-auto shrink-0 text-xs text-amber-400 font-mono">{videoStatus}</span>
+            )}
+            {!videoLoading && !activeArtifact && activeModel && (
+              <span className="ml-auto shrink-0 text-xs text-neutral-500 font-mono truncate max-w-[40%]">
+                {activeModel}
+              </span>
+            )}
+          </header>
+
+          {messages.length === 0 ? (
+            <EmptyState
+              onPick={(s) => {
+                setInput(s);
+                composerRef.current?.focus();
+              }}
+            />
+          ) : (
+            <MessageList
+              messages={messages}
+              streamingId={streamingId}
+              typing={typing}
+              onRegenerate={onRegenerate}
+              onRegenerateImage={regenerateImage}
+              onEdit={onEdit}
+              activeArtifactId={activeArtifactId}
+              onOpenArtifact={handleOpenArtifact}
+            />
           )}
 
-          <span className="truncate">{activeConv?.title || "Chat baru"}</span>
-          {videoLoading && videoStatus && (
-            <span className="ml-auto shrink-0 text-xs text-amber-400 font-mono">
-              {videoStatus}
-            </span>
-          )}
-          {!videoLoading && activeModel && (
-            <span className="ml-auto shrink-0 text-xs text-neutral-500 font-mono truncate max-w-[40%]">
-              {activeModel}
-            </span>
-          )}
-        </header>
+          <Composer
+            ref={composerRef}
+            value={input}
+            onChange={setInput}
+            onSend={send}
+            onStop={stop}
+            streaming={!!streamingId || imageLoading || videoLoading || docLoading}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            mode={mode}
+            onModeChange={setMode}
+            aspect={aspect}
+            onAspectChange={setAspect}
+            docType={docType}
+            onDocTypeChange={setDocType}
+          />
+        </main>
 
-        {messages.length === 0 ? (
-          <EmptyState
-            onPick={(s) => {
-              setInput(s);
-              composerRef.current?.focus();
-            }}
-          />
-        ) : (
-          <MessageList
-            messages={messages}
-            streamingId={streamingId}
-            typing={typing}
-            onRegenerate={onRegenerate}
-            onRegenerateImage={regenerateImage}
-            onEdit={onEdit}
-          />
+        {artifactOpen && activeArtifact && activeArtifact.generatedUI && (
+          <>
+            {isDesktop ? (
+              <div className="w-[45%] min-w-[380px] max-w-[720px] shrink-0 animate-[slideInRight_0.2s_ease-out]">
+                <ArtifactPanel
+                  code={activeArtifact.generatedUI.code}
+                  prompt={activeArtifact.generatedUI.prompt}
+                  onClose={() => setArtifactOpen(false)}
+                />
+              </div>
+            ) : (
+              <div className="fixed inset-0 z-50 bg-neutral-950 animate-[slideInRight_0.2s_ease-out]">
+                <ArtifactPanel
+                  code={activeArtifact.generatedUI.code}
+                  prompt={activeArtifact.generatedUI.prompt}
+                  onClose={() => setArtifactOpen(false)}
+                />
+              </div>
+            )}
+          </>
         )}
-
-        <Composer
-          ref={composerRef}
-          value={input}
-          onChange={setInput}
-          onSend={send}
-          onStop={stop}
-          streaming={!!streamingId || imageLoading || videoLoading || docLoading}
-          attachments={attachments}
-          onAttachmentsChange={setAttachments}
-          mode={mode}
-          onModeChange={setMode}
-          aspect={aspect}
-          onAspectChange={setAspect}
-          docType={docType}
-          onDocTypeChange={setDocType}
-        />
-      </main>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { chatSystemPrompt, visionSystemPrompt } from "@/lib/prompts";
+import { chatSystemPrompt, visionSystemPrompt, uiGeneratorSystemPrompt } from "@/lib/prompts";
 import { runEnvCheckOnce } from "@/lib/env-check";
 export const maxDuration = 60;
 runEnvCheckOnce();
@@ -23,6 +23,48 @@ function hasImage(content: MsgContent): boolean {
   return content.some((part) => part.type === "image_url" && part.image_url?.url);
 }
 
+/**
+ * Deteksi apakah user meminta UI (Prompt-to-UI).
+ * Menggunakan kombinasi kata kunci, bukan hanya panjang teks.
+ */
+function isUIRequest(text: string): boolean {
+  const t = text.toLowerCase();
+
+  // Kata kunci yang menandakan UI (bukan sekadar "buat")
+  const uiKeywords = [
+    "landing page", "ui", "ux", "html", "css", "tailwind",
+    "komponen", "component", "halaman", "page", "website",
+    "form", "dashboard", "kanban", "board", "chat ui",
+    "navbar", "hero", "footer", "modal", "card", "layout",
+    "responsive", "wireframe", "mockup", "prototype",
+    "multi-step", "multistep", "carousel", "slider",
+    "kalkulator", "calculator", "todo", "notes", "timer",
+    "pomodoro", "tictactoe", "tictactoe", "game",
+  ];
+
+  // Kata kerja aksi yang mengindikasikan "generate/buat"
+  const actionKeywords = [
+    "buatkan", "buat", "create", "generate", "design", "rancang",
+  ];
+
+  const hasUIKeyword = uiKeywords.some((kw) => t.includes(kw));
+  const hasActionKeyword = actionKeywords.some((kw) => t.includes(kw));
+
+  // Rule 1: Ada kata kunci UI + action verb → UI request
+  if (hasUIKeyword && hasActionKeyword) return true;
+
+  // Rule 2: Ada ≥3 kata kunci UI → UI request (meski tanpa action verb)
+  const uiKeywordCount = uiKeywords.filter((kw) => t.includes(kw)).length;
+  if (uiKeywordCount >= 3) return true;
+
+  // Rule 3: Struktur prompt khas UI (bullet points + "fitur")
+  if (t.includes("fitur:") && (t.includes("-") || t.includes("•"))) {
+    return hasUIKeyword;
+  }
+
+  return false;
+}
+
 type ProviderConfig = {
   url: string;
   apiKey: string | undefined;
@@ -34,7 +76,6 @@ type ProviderConfig = {
 function getProviderConfig(): ProviderConfig | null {
   const provider = (process.env.AI_PROVIDER ?? "gemini").toLowerCase();
   const override = process.env.AI_MODEL?.trim();
-
   const withOverride = (defaults: string[]) =>
     override ? [override, ...defaults.filter((m) => m !== override)] : defaults;
 
@@ -46,7 +87,6 @@ function getProviderConfig(): ProviderConfig | null {
         modelsText: withOverride(["grok-3-mini", "grok-3", "grok-2-1212"]),
         modelsVision: withOverride(["grok-3-mini", "grok-3"]),
       };
-
     case "gemini":
       return {
         url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -64,7 +104,6 @@ function getProviderConfig(): ProviderConfig | null {
           "gemini-flash-lite-latest",
         ]),
       };
-
     case "openrouter":
       return {
         url: "https://openrouter.ai/api/v1/chat/completions",
@@ -82,7 +121,6 @@ function getProviderConfig(): ProviderConfig | null {
           "X-Title": "Chat Streaming App",
         },
       };
-
     default:
       return null;
   }
@@ -98,17 +136,9 @@ export async function POST(req: NextRequest) {
   }
 
   const cfg = getProviderConfig();
-  if (!cfg) {
+  if (!cfg || !cfg.apiKey) {
     return new Response(
-      JSON.stringify({ error: "AI_PROVIDER tidak dikenal" }),
-      { status: 500 }
-    );
-  }
-  if (!cfg.apiKey) {
-    return new Response(
-      JSON.stringify({
-        error: `API key untuk provider "${process.env.AI_PROVIDER}" belum diisi di .env.local`,
-      }),
+      JSON.stringify({ error: "Provider/API key belum diisi" }),
       { status: 500 }
     );
   }
@@ -135,21 +165,32 @@ export async function POST(req: NextRequest) {
   }
 
   const isVision = hasImage(last.content);
+  const lastContentText = typeof last.content === "string" ? last.content : "";
+  const isUI = !isVision && isUIRequest(lastContentText);
   const modelList = isVision ? cfg.modelsVision : cfg.modelsText;
 
+  // Debug log
+  if (process.env.NODE_ENV !== "production") {
+    console.log(
+      `[chat] isUIRequest("${lastContentText.slice(0, 60)}...") = ${isUI}`
+    );
+    console.log(`[chat] lastContentText.length = ${lastContentText.length}`);
+  }
+
   console.log(
-    `[chat] mode: ${isVision ? "vision (ada gambar)" : "teks"} · kandidat: ${modelList.join(", ")}`
+    `[chat] mode: ${isVision ? "vision" : isUI ? "ui-generator" : "teks"} · kandidat: ${modelList.join(", ")}`
   );
 
-  const systemPrompt = isVision ? visionSystemPrompt() : chatSystemPrompt();
+  const systemPrompt = isVision
+    ? visionSystemPrompt()
+    : isUI
+      ? uiGeneratorSystemPrompt()
+      : chatSystemPrompt();
 
   const payloadBase = {
     stream: true,
-    temperature: isVision ? 0.2 : 0.7,
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...messages,
-    ],
+    temperature: isVision ? 0.2 : isUI ? 0.1 : 0.7,
+    messages: [{ role: "system", content: systemPrompt }, ...messages],
   };
 
   let upstream: Response | null = null;
@@ -178,22 +219,13 @@ export async function POST(req: NextRequest) {
     const detail = await res.text().catch(() => "");
     lastError = `[${res.status}] ${detail}`;
     lastStatus = res.status;
-
-    console.warn(
-      `[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`
-    );
-
+    console.warn(`[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`);
     if (res.status === 401 || res.status === 403) break;
   }
 
   if (!upstream || !upstream.body) {
     let userMessage = "Semua model gagal. Coba lagi nanti.";
-    if (lastStatus === 429) {
-      userMessage =
-        "Kuota gratis sedang penuh (rate limit). Tunggu sebentar lalu coba lagi.";
-    }
-
-    console.error("[chat] semua model gagal:", lastError);
+    if (lastStatus === 429) userMessage = "Kuota gratis sedang penuh. Tunggu sebentar.";
     return new Response(
       JSON.stringify({
         error: "upstream",
@@ -203,8 +235,6 @@ export async function POST(req: NextRequest) {
       { status: 502, headers: { "Content-Type": "application/json" } }
     );
   }
-
-  console.log(`[chat] memakai model: ${usedModel}`);
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -232,9 +262,7 @@ export async function POST(req: NextRequest) {
               const json = JSON.parse(data);
               const token = json.choices?.[0]?.delta?.content;
               if (token) controller.enqueue(encoder.encode(token));
-            } catch {
-              // skip malformed chunk
-            }
+            } catch {}
           }
         }
         controller.close();
@@ -251,7 +279,7 @@ export async function POST(req: NextRequest) {
       "X-Accel-Buffering": "no",
       "X-Model-Used": usedModel,
       "X-Provider-Used": process.env.AI_PROVIDER ?? "gemini",
-      "X-Mode": isVision ? "vision" : "text",
+      "X-Mode": isVision ? "vision" : isUI ? "ui" : "text",
     },
   });
 }

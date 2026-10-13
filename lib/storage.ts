@@ -49,6 +49,10 @@ export type ChatMessage = {
   generatedImages?: GeneratedImage[];
   generatedVideos?: GeneratedVideo[];
   generatedDocuments?: GeneratedDocument[];
+  generatedUI?: {
+    code: string;
+    prompt: string;
+  };
 };
 
 export type Conversation = {
@@ -82,6 +86,7 @@ export function saveAll(list: Conversation[]) {
           generatedImages,
           generatedVideos,
           generatedDocuments,
+          generatedUI,
           ...m
         }) => m
       ),
