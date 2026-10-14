@@ -114,11 +114,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const systemPrompt = isVision
-    ? visionSystemPrompt()
-    : isUI
-      ? uiGeneratorSystemPrompt()
-      : chatSystemPrompt();
+const systemPrompt = isVision
+  ? visionSystemPrompt()
+  : isUI
+    ? uiGeneratorSystemPrompt()
+    : chatSystemPrompt({
+        now: new Date(),
+        timeZone: "Asia/Jakarta",
+      });
 
   // Saat mode UI, kirim HANYA user message terakhir
   const messagesToSend = isUI
