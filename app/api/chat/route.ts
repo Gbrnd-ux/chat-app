@@ -1,6 +1,10 @@
 ﻿import { NextRequest } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { chatSystemPrompt, visionSystemPrompt, uiGeneratorSystemPrompt } from "@/lib/prompts";
+import {
+  chatSystemPrompt,
+  visionSystemPrompt,
+  uiGeneratorSystemPrompt,
+} from "@/lib/prompts";
 import { runEnvCheckOnce } from "@/lib/env-check";
 export const maxDuration = 60;
 runEnvCheckOnce();
@@ -39,12 +43,13 @@ function isUIRequest(text: string): boolean {
     "responsive", "wireframe", "mockup", "prototype",
     "multi-step", "multistep", "carousel", "slider",
     "kalkulator", "calculator", "todo", "notes", "timer",
-    "pomodoro", "tictactoe", "tictactoe", "game",
+    "pomodoro", "tictactoe", "game", "portofolio", "portfolio",
+    "resume", "cv", "profile", "profil",
   ];
 
   // Kata kerja aksi yang mengindikasikan "generate/buat"
   const actionKeywords = [
-    "buatkan", "buat", "create", "generate", "design", "rancang",
+    "buatkan", "buat", "create", "generate", "design", "rancang", "bikin",
   ];
 
   const hasUIKeyword = uiKeywords.some((kw) => t.includes(kw));
@@ -60,6 +65,14 @@ function isUIRequest(text: string): boolean {
   // Rule 3: Struktur prompt khas UI (bullet points + "fitur")
   if (t.includes("fitur:") && (t.includes("-") || t.includes("•"))) {
     return hasUIKeyword;
+  }
+
+  // Rule 4: Follow-up singkat di chat UI ("buatkan ui-nya", "lanjut", "generate")
+  if (
+    t.length < 40 &&
+    (t.includes("ui") || t.includes("generate") || t.includes("lanjut"))
+  ) {
+    return hasActionKeyword;
   }
 
   return false;
@@ -187,10 +200,21 @@ export async function POST(req: NextRequest) {
       ? uiGeneratorSystemPrompt()
       : chatSystemPrompt();
 
+  // 🔥 Saat mode UI, kirim HANYA user message terakhir.
+  // Ini mencegah AI "terjebak" mengikuti pola percakapan sebelumnya
+  // (misal: turn sebelumnya dibalas teks penjelasan, lalu turn berikutnya
+  //  juga ikut balas teks, padahal user minta generate UI).
+  const messagesToSend = isUI
+    ? [{ role: last.role, content: last.content }]
+    : messages;
+
   const payloadBase = {
     stream: true,
     temperature: isVision ? 0.2 : isUI ? 0.1 : 0.7,
-    messages: [{ role: "system", content: systemPrompt }, ...messages],
+    messages: [
+      { role: "system", content: systemPrompt },
+      ...messagesToSend,
+    ],
   };
 
   let upstream: Response | null = null;
@@ -219,13 +243,16 @@ export async function POST(req: NextRequest) {
     const detail = await res.text().catch(() => "");
     lastError = `[${res.status}] ${detail}`;
     lastStatus = res.status;
-    console.warn(`[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`);
+    console.warn(
+      `[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`
+    );
     if (res.status === 401 || res.status === 403) break;
   }
 
   if (!upstream || !upstream.body) {
     let userMessage = "Semua model gagal. Coba lagi nanti.";
-    if (lastStatus === 429) userMessage = "Kuota gratis sedang penuh. Tunggu sebentar.";
+    if (lastStatus === 429)
+      userMessage = "Kuota gratis sedang penuh. Tunggu sebentar.";
     return new Response(
       JSON.stringify({
         error: "upstream",
