@@ -41,7 +41,7 @@ function isUIRequest(text: string): boolean {
     "multi-step", "multistep", "carousel", "slider",
     "kalkulator", "calculator", "todo", "notes", "timer",
     "pomodoro", "tictactoe", "game", "portofolio", "portfolio",
-    "resume", "cv", "profile", "profil",
+    "resume", "cv", "profile", "profil", "fotografer", "photographer",
   ];
 
   const actionKeywords = [
@@ -128,8 +128,10 @@ export async function POST(req: NextRequest) {
   const payloadBase = {
     stream: true,
     temperature: isVision ? 0.2 : isUI ? 0.1 : 0.7,
-    // 🔥 max_tokens lebih besar untuk UI (HTML panjang)
-    max_tokens: isUI ? 8192 : 4096,
+    // 🔥 max_tokens: Gemini 2.5 Flash-Lite support hingga 8192 output,
+    // tapi kalau kita kirim 16000, provider akan auto-cap ke max mereka.
+    // Nilai tinggi aman karena provider yang batasi.
+    max_tokens: isUI ? 16000 : 4096,
     messages: [
       { role: "system", content: systemPrompt },
       ...messagesToSend,
@@ -196,9 +198,6 @@ export async function POST(req: NextRequest) {
               `[chat] ❌ ${keyLabel}/${model} gagal: ${res.status} — ${detail.slice(0, 300)}`
             );
           }
-          // 401/403 = key salah → coba key berikutnya
-          // 429 = rate limit → coba key berikutnya
-          // Error lain → coba key berikutnya juga (biar maksimal)
           continue;
         } catch (err: any) {
           if (err?.name === "AbortError") throw err;
@@ -212,20 +211,18 @@ export async function POST(req: NextRequest) {
   }
 
   if (!upstream || !upstream.body) {
-    // 🔒 Log detail HANYA ke server, tidak terlihat user
     console.error("[chat] semua model gagal:", lastError);
 
-    // 🔒 Pesan generik untuk user — tidak bocorkan provider, key, atau status
     let userMessage = "Maaf, layanan sedang sibuk. Coba lagi sebentar lagi.";
     if (lastStatus === 429)
       userMessage = "Terlalu banyak permintaan. Tunggu sebentar ya.";
     if (lastStatus === 0)
       userMessage = "Koneksi bermasalah. Cek internetmu dan coba lagi.";
 
-    return new Response(
-      JSON.stringify({ error: userMessage }),
-      { status: 502, headers: { "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: userMessage }), {
+      status: 502,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const encoder = new TextEncoder();
@@ -252,8 +249,22 @@ export async function POST(req: NextRequest) {
             }
             try {
               const json = JSON.parse(data);
-              const token = json.choices?.[0]?.delta?.content;
-              if (token) controller.enqueue(encoder.encode(token));
+              const delta = json.choices?.[0]?.delta?.content;
+              const finishReason = json.choices?.[0]?.finish_reason;
+
+              if (delta) controller.enqueue(encoder.encode(delta));
+
+              // 🔥 Kalau finish_reason = "length" → kirim marker khusus
+              // Frontend akan tahu bahwa output terpotong
+              if (finishReason === "length") {
+                if (process.env.NODE_ENV !== "production") {
+                  console.warn(`[chat] ⚠️ output terpotong (finish_reason: length)`);
+                }
+                // Kirim marker tersembunyi (tidak akan muncul di UI)
+                controller.enqueue(
+                  encoder.encode("\n<!--__TRUNCATED__-->\n")
+                );
+              }
             } catch {}
           }
         }
@@ -269,8 +280,6 @@ export async function POST(req: NextRequest) {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
-      // 🔒 Header X-Model-Used, X-Provider-Used, X-Mode DIHAPUS
-      // agar user tidak bisa lihat backend pakai provider/model apa
     },
   });
 }

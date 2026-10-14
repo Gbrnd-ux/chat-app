@@ -9,31 +9,30 @@ import { EmptyState } from "@/components/chat/EmptyState";
 import { showToast } from "@/lib/toast";
 import { Attachment, Conversation, ChatMessage, loadAll, upsert, remove, newId } from "@/lib/storage";
 import { extractHtml, isCompleteHtml } from "@/lib/ui-output";
-
+import {
+  checkDocClarification,
+  isAnsweringClarification,
+  extractInfoFromHistory,
+  buildNextQuestion,
+  isInfoComplete,
+  extractLastQuestionField,
+  detectKindExport,
+  type InfoMatch,
+} from "@/lib/doc-clarification";
 /* -------------------------------------------------------------------------- */
 /* Helper: Compress image agar payload kecil                                  */
 /* -------------------------------------------------------------------------- */
 
-const COMPRESS_THRESHOLD_BYTES = 400 * 1024; // 400 KB
+const COMPRESS_THRESHOLD_BYTES = 400 * 1024;
 const COMPRESS_MAX_SIZE = 1280;
 const COMPRESS_QUALITY = 0.82;
 
-/**
- * Estimasi ukuran dari data URL base64 (dalam bytes).
- */
 function dataUrlSizeBytes(dataUrl: string): number {
   const base64 = dataUrl.split(",")[1] ?? "";
   return Math.floor((base64.length * 3) / 4);
 }
 
-/**
- * Compress gambar: resize + encode ulang ke JPEG.
- * - Skip kalau sudah < threshold
- * - Skip kalau bukan image
- * - Fallback ke original kalau gagal
- */
 async function compressImage(dataUrl: string): Promise<string> {
-  // Skip kalau bukan image atau sudah kecil
   if (!dataUrl.startsWith("data:image/")) return dataUrl;
   if (dataUrlSizeBytes(dataUrl) < COMPRESS_THRESHOLD_BYTES) return dataUrl;
 
@@ -58,7 +57,6 @@ async function compressImage(dataUrl: string): Promise<string> {
         const ctx = canvas.getContext("2d");
         if (!ctx) return resolve(dataUrl);
 
-        // Background putih supaya PNG transparan tidak jadi hitam saat di-JPEG
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
@@ -78,12 +76,6 @@ async function compressImage(dataUrl: string): Promise<string> {
 /* Helper: Fetch dengan retry otomatis                                        */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Fetch dengan retry otomatis untuk error network & 5xx.
- * - 4xx (kecuali 408/429) → tidak retry (error permanen)
- * - 408/429/5xx & network error → retry dengan exponential backoff
- * - AbortError → langsung throw (user cancel)
- */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
@@ -95,13 +87,11 @@ async function fetchWithRetry(
     try {
       const res = await fetch(url, options);
 
-      // Sukses atau error permanen (4xx yang bukan 408/429) → return langsung
       if (res.ok) return res;
       if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
         return res;
       }
 
-      // 5xx, 408, 429 → retry
       lastError = new Error(`HTTP ${res.status}`);
       if (process.env.NODE_ENV !== "production") {
         console.warn(`[retry] attempt ${attempt + 1}/${maxRetries + 1} gagal (${res.status})`);
@@ -115,7 +105,6 @@ async function fetchWithRetry(
     }
 
     if (attempt < maxRetries) {
-      // Exponential backoff: 800ms, 1600ms
       await new Promise((r) => setTimeout(r, 800 * Math.pow(2, attempt)));
     }
   }
@@ -244,7 +233,6 @@ export default function Home() {
       abortRef.current = ctrl;
 
       try {
-        // 🔥 GUNAKAN fetchWithRetry (retry otomatis 2x untuk error network & 5xx)
         const res = await fetchWithRetry(
           "/api/chat",
           {
@@ -259,16 +247,11 @@ export default function Home() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         if (!res.body) throw new Error("No body");
 
-        // 🔒 Mode UI dideteksi dari panjang/format respons, bukan header.
-        // Kita tidak lagi memakai X-Mode, X-Model-Used, X-Provider-Used
-        // supaya backend tidak bocor ke user.
         let isUIMode = false;
 
         if (stillHere(conversationId)) {
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m } : m
-            )
+            prev.map((m) => (m.id === assistantId ? { ...m } : m))
           );
           setStreamingId(assistantId);
         }
@@ -278,7 +261,6 @@ export default function Home() {
         let acc = "";
         let streamError: Error | null = null;
 
-        // 🔥 Baca stream dengan graceful error handling
         try {
           while (true) {
             const { value, done } = await reader.read();
@@ -286,7 +268,6 @@ export default function Home() {
             acc += decoder.decode(value, { stream: true });
 
             if (stillHere(conversationId)) {
-              // Deteksi otomatis apakah ini UI mode dari awal output HTML
               if (!isUIMode && acc.includes("<!DOCTYPE html>")) {
                 isUIMode = true;
               }
@@ -308,14 +289,12 @@ export default function Home() {
             }
           }
         } catch (readErr: any) {
-          // Stream terputus di tengah — simpan yang sudah didapat, jangan buang
           streamError = readErr;
           if (process.env.NODE_ENV !== "production") {
             console.warn("[stream] terputus di tengah:", readErr?.message);
           }
         }
 
-        // 🔥 Fallback: kalau backend salah deteksi mode, tapi AI tetap generate HTML
         if (!isUIMode && acc.includes("<!DOCTYPE html>") && acc.includes("</html>")) {
           if (process.env.NODE_ENV !== "production") {
             console.log("[frontend] Fallback: mendeteksi HTML lengkap dari output AI");
@@ -323,7 +302,6 @@ export default function Home() {
           isUIMode = true;
         }
 
-        // Kalau stream terputus DAN tidak ada konten, ini benar-benar gagal
         if (streamError && acc.length === 0) {
           throw streamError;
         }
@@ -333,29 +311,64 @@ export default function Home() {
           content: isUIMode ? "Berikut adalah UI yang Anda minta:" : acc,
         };
 
-        // Kalau stream terputus tapi sudah ada partial content, tambahkan catatan
         if (streamError && acc.length > 0 && !isUIMode) {
           finalAssistant.content = acc + "\n\n_⚠️ Koneksi terputus di tengah, jawaban mungkin tidak lengkap._";
         }
 
         if (isUIMode) {
-          const cleanCode = extractHtml(acc);
-          if (isCompleteHtml(cleanCode)) {
-            finalAssistant.content = "Berikut adalah UI yang Anda minta:";
-            finalAssistant.generatedUI = {
-              code: cleanCode,
-              prompt: history[history.length - 1].content,
-            };
-            if (stillHere(conversationId)) {
-              setActiveArtifactId(assistantId);
-              setArtifactOpen(true);
-            }
-          } else {
-            finalAssistant.content =
-              "⚠️ UI yang dihasilkan tidak lengkap (mungkin terpotong). Silakan coba lagi atau perjelas prompt.";
-          }
-        }
+  // 🔥 Deteksi apakah output terpotong (marker dari backend)
+  const wasTruncated = acc.includes("__TRUNCATED__");
+  
+  let cleanCode = extractHtml(acc);
 
+  // 🔥 Auto-patch: kalau HTML belum lengkap, tutup tag yang terbuka
+  if (cleanCode.includes("<html") && !cleanCode.includes("</html>")) {
+    console.warn("[UI] HTML terpotong, auto-close tags...");
+
+    // Hitung tag terbuka yang belum ditutup
+    const countOpen = (tag: string) =>
+      (cleanCode.match(new RegExp(`<${tag}\\b`, "g")) || []).length;
+    const countClose = (tag: string) =>
+      (cleanCode.match(new RegExp(`</${tag}>`, "g")) || []).length;
+
+    const missingSections = Math.max(0, countOpen("section") - countClose("section"));
+    const missingDivs = Math.max(0, countOpen("div") - countClose("div"));
+    const missingMain = Math.max(0, countOpen("main") - countClose("main"));
+    const missingHeader = Math.max(0, countOpen("header") - countClose("header"));
+    const missingFooter = Math.max(0, countOpen("footer") - countClose("footer"));
+    const missingNav = Math.max(0, countOpen("nav") - countClose("nav"));
+
+    // Tutup dari dalam ke luar
+    let patched = cleanCode;
+    patched += "\n" + "</nav>".repeat(missingNav);
+    patched += "\n" + "</header>".repeat(missingHeader);
+    patched += "\n" + "</section>".repeat(missingSections);
+    patched += "\n" + "</div>".repeat(missingDivs);
+    patched += "\n" + "</main>".repeat(missingMain);
+    patched += "\n" + "</footer>".repeat(missingFooter);
+    patched += "\n</body>\n</html>";
+
+    cleanCode = patched;
+    console.log("[UI] Patched: +" + missingSections + " sections, +" + missingDivs + " divs");
+  }
+
+  if (cleanCode.includes("</html>")) {
+    finalAssistant.content = wasTruncated
+      ? "UI selesai (dengan auto-patch karena output terpotong)."
+      : "Berikut adalah UI yang Anda minta:";
+    finalAssistant.generatedUI = {
+      code: cleanCode,
+      prompt: history[history.length - 1].content,
+    };
+    if (stillHere(conversationId)) {
+      setActiveArtifactId(assistantId);
+      setArtifactOpen(true);
+    }
+  } else {
+    finalAssistant.content =
+      "⚠️ UI tidak bisa dirender. Coba prompt lebih singkat atau ketik regenerate.";
+  }
+}
         const finalMsgs = [...history, finalAssistant];
         persist(finalMsgs, conversationId);
 
@@ -366,7 +379,6 @@ export default function Home() {
       } catch (err: any) {
         if (err?.name === "AbortError") return;
 
-        // Log detail untuk debugging (hanya server / console developer)
         if (process.env.NODE_ENV !== "production") {
           console.error("[stream error]", {
             name: err?.name,
@@ -477,98 +489,27 @@ export default function Home() {
   };
 
   /* ============================================================ */
-  /* VIDEO                                                         */
+  /* DOCUMENT — helper: build file                                 */
   /* ============================================================ */
-  const generateVideo = async (prompt: string, conversationId: string) => {
-    const userMsg: ChatMessage = { id: newId(), role: "user", content: prompt, createdAt: Date.now() };
+  const doGenerateDocument = async (
+    prompt: string,
+    afterUser: ChatMessage[],
+    conversationId: string
+  ) => {
     const placeholderId = newId();
     const placeholder: ChatMessage = {
       id: placeholderId,
       role: "assistant",
-      content: "",
+      content: "📝 Sedang menyusun dokumen, mohon tunggu (10-30 detik)…",
       createdAt: Date.now(),
     };
-    const afterUser = [...messages, userMsg];
-    const next = [...afterUser, placeholder];
-
-    if (stillHere(conversationId)) {
-      setMessages(next);
-      setVideoLoading(true);
-      setVideoStatus("Memproses video…");
-    }
-    showToast("Membuat video… (30–120 detik)", "info");
-
-    try {
-      const res = await fetchWithRetry("/api/generate-video/agnes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, aspect: "16:9 (832x480)", duration: 3.5 }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (data.status !== "completed" || !data.videoUrl) {
-        throw new Error("Response tidak berisi video");
-      }
-      const finalAssistant: ChatMessage = {
-        ...placeholder,
-        content: "",
-        generatedVideos: [
-          {
-            id: newId(),
-            videoUrl: data.videoUrl,
-            prompt,
-            createdAt: Date.now(),
-          },
-        ],
-      };
-      const finalMsgs = [...afterUser, finalAssistant];
-      persist(finalMsgs, conversationId);
-      if (stillHere(conversationId)) {
-        setMessages(finalMsgs);
-        showToast("Video siap!", "success");
-      }
-    } catch (err: any) {
-      const errMsg: ChatMessage = {
-        ...placeholder,
-        content: `⚠️ Gagal membuat video: ${err.message}`,
-      };
-      const finalMsgs = [...afterUser, errMsg];
-      persist(finalMsgs, conversationId);
-      if (stillHere(conversationId)) {
-        setMessages(finalMsgs);
-        showToast("Gagal membuat video", "error");
-      }
-    } finally {
-      if (stillHere(conversationId)) {
-        setVideoLoading(false);
-        setVideoStatus("");
-      }
-    }
-  };
-
-  /* ============================================================ */
-  /* DOCUMENT                                                      */
-  /* ============================================================ */
-  const generateDocument = async (prompt: string, conversationId: string) => {
-    const userMsg: ChatMessage = { id: newId(), role: "user", content: prompt, createdAt: Date.now() };
-    const placeholderId = newId();
-    const placeholder: ChatMessage = {
-      id: placeholderId,
-      role: "assistant",
-      content: "",
-      createdAt: Date.now(),
-    };
-    const afterUser = [...messages, userMsg];
     const next = [...afterUser, placeholder];
 
     if (stillHere(conversationId)) {
       setMessages(next);
       setDocLoading(true);
     }
-    showToast(`Membuat ${docType === "word" ? "Word" : "Excel"}…`, "info");
+    showToast(`Menyusun ${docType === "word" ? "Word" : "Excel"}…`, "info");
 
     try {
       const res = await fetchWithRetry("/api/generate-document", {
@@ -581,10 +522,28 @@ export default function Home() {
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
+
+      // Backend minta klarifikasi (fallback)
+      if (data.status === "needs_clarification" && data.question) {
+        const clarifyMsg: ChatMessage = {
+          ...placeholder,
+          content: `🤔 ${data.question}`,
+        };
+        const finalMsgs = [...afterUser, clarifyMsg];
+        persist(finalMsgs, conversationId);
+        if (stillHere(conversationId)) {
+          setMessages(finalMsgs);
+          showToast("AI butuh info tambahan", "info");
+        }
+        return;
+      }
+
+      // Sukses generate
       const { fileName, mimeType, base64, size } = data;
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
+        hasDoc: true, // 👈 session boundary untuk memory
         generatedDocuments: [
           {
             id: newId(),
@@ -602,7 +561,10 @@ export default function Home() {
       persist(finalMsgs, conversationId);
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
-        showToast("Dokumen siap", "success");
+        showToast(
+          data.source === "ai" ? "Dokumen siap (AI)" : "Dokumen siap",
+          "success"
+        );
       }
 
       // Auto-download
@@ -641,6 +603,98 @@ export default function Home() {
       if (stillHere(conversationId)) setDocLoading(false);
     }
   };
+
+  /* ============================================================ */
+  /* DOCUMENT — entry point dengan memory & force generate         */
+  /* ============================================================ */
+  /* ============================================================ */
+/* DOCUMENT — step-by-step questioning                           */
+/* ============================================================ */
+const generateDocument = async (prompt: string, conversationId: string) => {
+  const isAnswer = isAnsweringClarification(messages);
+
+  const userMsg: ChatMessage = {
+    id: newId(),
+    role: "user",
+    content: prompt,
+    createdAt: Date.now(),
+  };
+  const afterUser = [...messages, userMsg];
+
+  // Extract info + kind dari semua msgs
+  const { text: combinedText, info } = extractInfoFromHistory(afterUser);
+  const kind = detectKindExport(combinedText);
+
+  // Merge lastQField (untuk handle jawaban pendek seperti "UI/UX")
+  const lastQField = extractLastQuestionField(afterUser);
+  if (lastQField && !info[lastQField as keyof InfoMatch]) {
+    (info as any)[lastQField] = true;
+  }
+
+  // KASUS A: User menjawab klarifikasi
+  if (isAnswer) {
+    // Force generate
+    const forceGenerate = /^(generate|gas|langsung|buat|oke|ok|ya|yes|skip|lompati|cukup)$/i.test(
+      prompt.trim()
+    );
+
+    const complete = isInfoComplete(info, kind);
+    const userMsgCount = afterUser.filter((m) => m.role === "user").length;
+    const tooManyAnswers = userMsgCount >= 6;
+
+    // Debug
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[doc] kind:", kind, "info:", info);
+      console.log("[doc] force:", forceGenerate, "complete:", complete, "count:", userMsgCount);
+    }
+
+    // Generate kalau:
+    // 1. Force generate
+    // 2. Info lengkap
+    // 3. Sudah jawab ≥ 6x (safety)
+    if (forceGenerate || complete || tooManyAnswers) {
+      await doGenerateDocument(combinedText, afterUser, conversationId);
+      return;
+    }
+
+    // Belum lengkap → tanya field berikutnya
+    const nextQ = buildNextQuestion(info, kind);
+    if (nextQ) {
+      const followUpMsg: ChatMessage = {
+        id: newId(),
+        role: "assistant",
+        content: `🤔 ${nextQ.question}\n\n_Ketik **"generate"** kalau mau langsung dibuat._`,
+        createdAt: Date.now(),
+      };
+      const next = [...afterUser, followUpMsg];
+      if (stillHere(conversationId)) setMessages(next);
+      persist(next, conversationId);
+      return;
+    }
+
+    // Semua sudah ditanya → generate
+    await doGenerateDocument(combinedText, afterUser, conversationId);
+    return;
+  }
+
+  // KASUS B: Prompt pertama
+  const clarity = checkDocClarification(prompt, docType);
+  if (clarity.needsClarification && clarity.question) {
+    const clarifyMsg: ChatMessage = {
+      id: newId(),
+      role: "assistant",
+      content: `🤔 ${clarity.question}`,
+      createdAt: Date.now(),
+    };
+    const next = [...afterUser, clarifyMsg];
+    if (stillHere(conversationId)) setMessages(next);
+    persist(next, conversationId);
+    return;
+  }
+
+  // Prompt pertama sudah cukup detail → generate
+  await doGenerateDocument(prompt, afterUser, conversationId);
+};
 
   /* ============================================================ */
   /* REGENERATE IMAGE                                              */
@@ -694,7 +748,7 @@ export default function Home() {
   };
 
   /* ============================================================ */
-  /* SEND — dengan image compression                               */
+  /* SEND                                                          */
   /* ============================================================ */
   const send = () => {
     const text = input.trim();
@@ -708,12 +762,11 @@ export default function Home() {
 
     if (mode === "image") { generateImage(text, id); setInput(""); return; }
     if (mode === "video") {
-  showToast("Fitur video masih dalam pengembangan. Segera hadir! 🎬", "info");
-  return;
-}
+      showToast("Fitur video masih dalam pengembangan. Segera hadir! 🎬", "info");
+      return;
+    }
     if (mode === "document") { generateDocument(text, id); setInput(""); return; }
 
-    // 🔥 COMPRESS ATTACHMENTS sebelum kirim
     const prepareAndSend = async () => {
       let compressedAttachments: Attachment[] | undefined;
 

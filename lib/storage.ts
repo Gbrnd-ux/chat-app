@@ -53,6 +53,7 @@ export type ChatMessage = {
     code: string;
     prompt: string;
   };
+  hasDoc?: boolean; // 👈 TAMBAHKAN INI — penanda session boundary
 };
 
 export type Conversation = {
