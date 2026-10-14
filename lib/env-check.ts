@@ -6,6 +6,21 @@ type Check = {
   hint?: string;
 };
 
+// Helper: cek apakah ada key, baik format tunggal (_KEY) maupun jamak (_KEYS)
+function hasKeys(single: string | undefined, plural: string | undefined): boolean {
+  const s = single?.trim();
+  const p = plural?.trim();
+  if (s && s.length > 0) return true;
+  if (p && p.length > 0) return true;
+  return false;
+}
+
+// Helper: hitung berapa key yang terdaftar (dipisah koma)
+function countKeys(envVar: string | undefined): number {
+  if (!envVar) return 0;
+  return envVar.split(",").map((k) => k.trim()).filter(Boolean).length;
+}
+
 export function checkEnv(): Check[] {
   const provider = (process.env.AI_PROVIDER ?? "gemini").toLowerCase();
 
@@ -19,12 +34,20 @@ export function checkEnv(): Check[] {
 
   // Cek key sesuai provider aktif
   if (provider === "gemini") {
+    const ok = hasKeys(process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEYS);
+    const count = countKeys(process.env.GEMINI_API_KEYS);
     checks.push({
-      name: "GEMINI_API_KEY",
-      ok: !!process.env.GEMINI_API_KEY,
-      hint: "Dapatkan di https://aistudio.google.com/apikey",
+      name: "GEMINI_API_KEYS / GEMINI_API_KEY",
+      ok,
+      hint: ok
+        ? undefined
+        : "Dapatkan di https://aistudio.google.com/apikey",
     });
+    if (ok && count > 0) {
+      console.log(`  ℹ️  Gemini: ${count} API key terdeteksi`);
+    }
   }
+
   if (provider === "grok") {
     checks.push({
       name: "GROK_API_KEY",
@@ -32,15 +55,24 @@ export function checkEnv(): Check[] {
       hint: "Dapatkan di https://console.x.ai",
     });
   }
+
   if (provider === "openrouter") {
+    const ok = hasKeys(
+      process.env.OPENROUTER_API_KEY,
+      process.env.OPENROUTER_API_KEYS
+    );
+    const count = countKeys(process.env.OPENROUTER_API_KEYS);
     checks.push({
-      name: "OPENROUTER_API_KEY",
-      ok: !!process.env.OPENROUTER_API_KEY,
-      hint: "Dapatkan di https://openrouter.ai/keys",
+      name: "OPENROUTER_API_KEYS / OPENROUTER_API_KEY",
+      ok,
+      hint: ok ? undefined : "Dapatkan di https://openrouter.ai/keys",
     });
+    if (ok && count > 0) {
+      console.log(`  ℹ️  OpenRouter: ${count} API key terdeteksi`);
+    }
   }
 
-  // NVIDIA opsional (untuk generate gambar), tapi kalau kosong catat sebagai info
+  // NVIDIA opsional (untuk generate gambar)
   checks.push({
     name: "NVIDIA_API_KEY",
     ok: !!process.env.NVIDIA_API_KEY,

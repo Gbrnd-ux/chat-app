@@ -11,8 +11,8 @@ export type GeneratedImage = {
   id: string;
   dataUrl: string;
   prompt: string;
-  model: string;
-  provider: string;
+  model?: string;        // ← diubah jadi opsional
+  provider?: string;     // ← diubah jadi opsional
   createdAt: number;
   seed?: number;
   aspect?: string;
@@ -22,8 +22,8 @@ export type GeneratedVideo = {
   id: string;
   videoUrl: string;
   prompt: string;
-  model: string;
-  provider: string;
+  model?: string;        // ← diubah jadi opsional
+  provider?: string;     // ← diubah jadi opsional
   createdAt: number;
 };
 

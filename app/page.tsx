@@ -154,7 +154,6 @@ export default function Home() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
-  const [activeModel, setActiveModel] = useState<string>("");
   const [mode, setMode] = useState<ComposerMode>("chat");
   const [aspect, setAspect] = useState<AspectRatio>("1:1");
   const [docType, setDocType] = useState<DocType>("word");
@@ -206,7 +205,6 @@ export default function Home() {
     setMessages([]);
     setInput("");
     setAttachments([]);
-    setActiveModel("");
     setMode("chat");
     setArtifactOpen(false);
     setActiveArtifactId(null);
@@ -261,16 +259,15 @@ export default function Home() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         if (!res.body) throw new Error("No body");
 
-        const modelUsed = res.headers.get("X-Model-Used") ?? undefined;
-        const providerUsed = res.headers.get("X-Provider-Used") ?? undefined;
-        const modeHeader = res.headers.get("X-Mode");
-        let isUIMode = modeHeader === "ui";
+        // 🔒 Mode UI dideteksi dari panjang/format respons, bukan header.
+        // Kita tidak lagi memakai X-Mode, X-Model-Used, X-Provider-Used
+        // supaya backend tidak bocor ke user.
+        let isUIMode = false;
 
         if (stillHere(conversationId)) {
-          if (modelUsed) setActiveModel(`${providerUsed ?? "?"} · ${modelUsed}`);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, model: modelUsed, provider: providerUsed } : m
+              m.id === assistantId ? { ...m } : m
             )
           );
           setStreamingId(assistantId);
@@ -289,6 +286,11 @@ export default function Home() {
             acc += decoder.decode(value, { stream: true });
 
             if (stillHere(conversationId)) {
+              // Deteksi otomatis apakah ini UI mode dari awal output HTML
+              if (!isUIMode && acc.includes("<!DOCTYPE html>")) {
+                isUIMode = true;
+              }
+
               if (isUIMode) {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -308,12 +310,16 @@ export default function Home() {
         } catch (readErr: any) {
           // Stream terputus di tengah — simpan yang sudah didapat, jangan buang
           streamError = readErr;
-          console.warn("[stream] terputus di tengah:", readErr?.message);
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[stream] terputus di tengah:", readErr?.message);
+          }
         }
 
         // 🔥 Fallback: kalau backend salah deteksi mode, tapi AI tetap generate HTML
         if (!isUIMode && acc.includes("<!DOCTYPE html>") && acc.includes("</html>")) {
-          console.log("[frontend] Fallback: mendeteksi HTML lengkap dari output AI");
+          if (process.env.NODE_ENV !== "production") {
+            console.log("[frontend] Fallback: mendeteksi HTML lengkap dari output AI");
+          }
           isUIMode = true;
         }
 
@@ -325,8 +331,6 @@ export default function Home() {
         const finalAssistant: ChatMessage = {
           ...assistantMsg,
           content: isUIMode ? "Berikut adalah UI yang Anda minta:" : acc,
-          model: modelUsed,
-          provider: providerUsed,
         };
 
         // Kalau stream terputus tapi sudah ada partial content, tambahkan catatan
@@ -362,12 +366,14 @@ export default function Home() {
       } catch (err: any) {
         if (err?.name === "AbortError") return;
 
-        // Log detail untuk debugging
-        console.error("[stream error]", {
-          name: err?.name,
-          message: err?.message,
-          time: new Date().toISOString(),
-        });
+        // Log detail untuk debugging (hanya server / console developer)
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[stream error]", {
+            name: err?.name,
+            message: err?.message,
+            time: new Date().toISOString(),
+          });
+        }
 
         let msg = "Koneksi terputus. Coba lagi ya.";
         if (err.message === "HTTP 429") {
@@ -412,8 +418,6 @@ export default function Home() {
       role: "assistant",
       content: "",
       createdAt: Date.now(),
-      model: "…",
-      provider: "…",
     };
     const afterUser = [...messages, userMsg];
     const next = [...afterUser, placeholder];
@@ -432,22 +436,18 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+        throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      const { dataUrl, model, provider, seed } = data;
+      const { dataUrl, seed } = data;
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
-        model,
-        provider,
         generatedImages: [
           {
             id: newId(),
             dataUrl,
             prompt,
-            model,
-            provider,
             createdAt: Date.now(),
             seed,
             aspect,
@@ -458,15 +458,12 @@ export default function Home() {
       persist(finalMsgs, conversationId);
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
-        setActiveModel(`${provider} · ${model}`);
         showToast("Gambar selesai", "success");
       }
     } catch (err: any) {
       const errMsg: ChatMessage = {
         ...placeholder,
         content: `⚠️ Gagal membuat gambar: ${err.message}`,
-        model: undefined,
-        provider: undefined,
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
@@ -490,8 +487,6 @@ export default function Home() {
       role: "assistant",
       content: "",
       createdAt: Date.now(),
-      model: "…",
-      provider: "…",
     };
     const afterUser = [...messages, userMsg];
     const next = [...afterUser, placeholder];
@@ -499,7 +494,7 @@ export default function Home() {
     if (stillHere(conversationId)) {
       setMessages(next);
       setVideoLoading(true);
-      setVideoStatus("Mengirim ke Hugging Face…");
+      setVideoStatus("Memproses video…");
     }
     showToast("Membuat video… (30–120 detik)", "info");
 
@@ -511,7 +506,7 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+        throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
       if (data.status !== "completed" || !data.videoUrl) {
@@ -520,15 +515,11 @@ export default function Home() {
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
-        model: data.model ?? "wan-2.2-14b",
-        provider: data.provider ?? "huggingface",
         generatedVideos: [
           {
             id: newId(),
             videoUrl: data.videoUrl,
             prompt,
-            model: data.model ?? "wan-2.2-14b",
-            provider: data.provider ?? "huggingface",
             createdAt: Date.now(),
           },
         ],
@@ -537,15 +528,12 @@ export default function Home() {
       persist(finalMsgs, conversationId);
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
-        setActiveModel(`${data.provider} · ${data.model}`);
         showToast("Video siap!", "success");
       }
     } catch (err: any) {
       const errMsg: ChatMessage = {
         ...placeholder,
         content: `⚠️ Gagal membuat video: ${err.message}`,
-        model: undefined,
-        provider: undefined,
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
@@ -572,8 +560,6 @@ export default function Home() {
       role: "assistant",
       content: "",
       createdAt: Date.now(),
-      model: "…",
-      provider: "…",
     };
     const afterUser = [...messages, userMsg];
     const next = [...afterUser, placeholder];
@@ -592,15 +578,13 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+        throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
       const { fileName, mimeType, base64, size } = data;
       const finalAssistant: ChatMessage = {
         ...placeholder,
         content: "",
-        model: docType === "word" ? "docx-builder" : "xlsx-builder",
-        provider: "local",
         generatedDocuments: [
           {
             id: newId(),
@@ -618,7 +602,6 @@ export default function Home() {
       persist(finalMsgs, conversationId);
       if (stillHere(conversationId)) {
         setMessages(finalMsgs);
-        setActiveModel(`local · ${docType}`);
         showToast("Dokumen siap", "success");
       }
 
@@ -639,14 +622,14 @@ export default function Home() {
         a.remove();
         URL.revokeObjectURL(url);
       } catch (e) {
-        console.warn("[doc] auto-download gagal:", e);
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[doc] auto-download gagal:", e);
+        }
       }
     } catch (err: any) {
       const errMsg: ChatMessage = {
         ...placeholder,
         content: `⚠️ Gagal membuat dokumen: ${err.message}`,
-        model: undefined,
-        provider: undefined,
       };
       const finalMsgs = [...afterUser, errMsg];
       persist(finalMsgs, conversationId);
@@ -679,23 +662,19 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+        throw new Error(data?.error || `HTTP ${res.status}`);
       }
       const data = await res.json();
-      const { dataUrl, model, provider, seed } = data;
+      const { dataUrl, seed } = data;
       const updated = messages.map((m) =>
         m.id === messageId
           ? {
               ...m,
-              model,
-              provider,
               generatedImages: [
                 {
                   id: newId(),
                   dataUrl,
                   prompt: prevImg.prompt,
-                  model,
-                  provider,
                   createdAt: Date.now(),
                   seed,
                   aspect: keepAspect,
@@ -728,7 +707,10 @@ export default function Home() {
     }
 
     if (mode === "image") { generateImage(text, id); setInput(""); return; }
-    if (mode === "video") { generateVideo(text, id); setInput(""); return; }
+    if (mode === "video") {
+  showToast("Fitur video masih dalam pengembangan. Segera hadir! 🎬", "info");
+  return;
+}
     if (mode === "document") { generateDocument(text, id); setInput(""); return; }
 
     // 🔥 COMPRESS ATTACHMENTS sebelum kirim
@@ -745,7 +727,9 @@ export default function Home() {
             })
           );
         } catch (err) {
-          console.warn("[compress] gagal, pakai original:", err);
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[compress] gagal, pakai original:", err);
+          }
           compressedAttachments = attachments;
         }
       }
@@ -807,14 +791,6 @@ export default function Home() {
     setInput("");
     setAttachments([]);
     setMode("chat");
-    const lastAssistant = [...c.messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && m.model);
-    setActiveModel(
-      lastAssistant?.model
-        ? `${lastAssistant.provider ?? "?"} · ${lastAssistant.model}`
-        : ""
-    );
 
     const lastUI = [...c.messages].reverse().find((m) => m.generatedUI);
     if (lastUI) {
@@ -835,7 +811,6 @@ export default function Home() {
       activeIdRef.current = "";
       setMessages([]);
       setAttachments([]);
-      setActiveModel("");
       setArtifactOpen(false);
       setActiveArtifactId(null);
     }
@@ -906,9 +881,9 @@ export default function Home() {
             {videoLoading && videoStatus && (
               <span className="ml-auto shrink-0 text-xs text-amber-400 font-mono">{videoStatus}</span>
             )}
-            {!videoLoading && !activeArtifact && activeModel && (
-              <span className="ml-auto shrink-0 text-xs text-neutral-500 font-mono truncate max-w-[40%]">
-                {activeModel}
+            {typing && !videoLoading && (
+              <span className="ml-auto shrink-0 text-xs text-neutral-500">
+                sedang mengetik…
               </span>
             )}
           </header>

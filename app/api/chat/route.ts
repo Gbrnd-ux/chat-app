@@ -6,6 +6,8 @@ import {
   uiGeneratorSystemPrompt,
 } from "@/lib/prompts";
 import { runEnvCheckOnce } from "@/lib/env-check";
+import { getProviderConfig, type ProviderName } from "@/lib/providers";
+
 export const maxDuration = 60;
 runEnvCheckOnce();
 
@@ -68,67 +70,6 @@ function isUIRequest(text: string): boolean {
   return false;
 }
 
-type ProviderConfig = {
-  url: string;
-  apiKey: string | undefined;
-  modelsText: string[];
-  modelsVision: string[];
-  extraHeaders?: Record<string, string>;
-};
-
-function getProviderConfig(): ProviderConfig | null {
-  const provider = (process.env.AI_PROVIDER ?? "gemini").toLowerCase();
-  const override = process.env.AI_MODEL?.trim();
-  const withOverride = (defaults: string[]) =>
-    override ? [override, ...defaults.filter((m) => m !== override)] : defaults;
-
-  switch (provider) {
-    case "grok":
-      return {
-        url: "https://api.x.ai/v1/chat/completions",
-        apiKey: process.env.GROK_API_KEY,
-        modelsText: withOverride(["grok-3-mini", "grok-3", "grok-2-1212"]),
-        modelsVision: withOverride(["grok-3-mini", "grok-3"]),
-      };
-    case "gemini":
-      return {
-        url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        apiKey: process.env.GEMINI_API_KEY,
-        modelsText: withOverride([
-          "gemini-3.1-flash-lite",
-          "gemini-3.5-flash-lite",
-          "gemini-2.5-flash-lite",
-          "gemini-flash-lite-latest",
-        ]),
-        modelsVision: withOverride([
-          "gemini-3.1-flash-lite",
-          "gemini-3.5-flash-lite",
-          "gemini-2.5-flash-lite",
-          "gemini-flash-lite-latest",
-        ]),
-      };
-    case "openrouter":
-      return {
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        apiKey: process.env.OPENROUTER_API_KEY,
-        modelsText: withOverride([
-          "google/gemini-2.5-flash",
-          "google/gemini-2.0-flash-001",
-        ]),
-        modelsVision: withOverride([
-          "google/gemini-2.5-flash",
-          "google/gemini-2.0-flash-001",
-        ]),
-        extraHeaders: {
-          "HTTP-Referer": "http://localhost:3000",
-          "X-Title": "Chat Streaming App",
-        },
-      };
-    default:
-      return null;
-  }
-}
-
 export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for") ?? "anon";
   if (!checkRateLimit(ip)) {
@@ -136,14 +77,6 @@ export async function POST(req: NextRequest) {
       status: 429,
       headers: { "Retry-After": "20" },
     });
-  }
-
-  const cfg = getProviderConfig();
-  if (!cfg || !cfg.apiKey) {
-    return new Response(
-      JSON.stringify({ error: "Provider/API key belum diisi" }),
-      { status: 500 }
-    );
   }
 
   let body: { messages?: Msg[] };
@@ -170,18 +103,16 @@ export async function POST(req: NextRequest) {
   const isVision = hasImage(last.content);
   const lastContentText = typeof last.content === "string" ? last.content : "";
   const isUI = !isVision && isUIRequest(lastContentText);
-  const modelList = isVision ? cfg.modelsVision : cfg.modelsText;
 
   if (process.env.NODE_ENV !== "production") {
     console.log(
       `[chat] isUIRequest("${lastContentText.slice(0, 60)}...") = ${isUI}`
     );
     console.log(`[chat] lastContentText.length = ${lastContentText.length}`);
+    console.log(
+      `[chat] mode: ${isVision ? "vision" : isUI ? "ui-generator" : "teks"}`
+    );
   }
-
-  console.log(
-    `[chat] mode: ${isVision ? "vision" : isUI ? "ui-generator" : "teks"} · kandidat: ${modelList.join(", ")}`
-  );
 
   const systemPrompt = isVision
     ? visionSystemPrompt()
@@ -205,56 +136,94 @@ export async function POST(req: NextRequest) {
     ],
   };
 
+  // ── RANTAI FALLBACK LINTAS-PENYEDIA + ROTASI API KEY ──
+  const providerChain: ProviderName[] = ["gemini", "openrouter"];
+
   let upstream: Response | null = null;
   let usedModel = "";
+  let usedProvider = "";
   let lastError = "";
   let lastStatus = 0;
 
-  for (const model of modelList) {
-    try {
-      const res = await fetch(cfg.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.apiKey}`,
-          ...(cfg.extraHeaders ?? {}),
-        },
-        body: JSON.stringify({ ...payloadBase, model }),
-        signal: req.signal,
-      });
-
-      if (res.ok && res.body) {
-        upstream = res;
-        usedModel = model;
-        break;
+  outerLoop: for (const providerName of providerChain) {
+    const cfg = getProviderConfig(providerName);
+    if (!cfg || cfg.apiKeys.length === 0) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`[chat] provider "${providerName}" dilewati: API key tidak ada`);
       }
+      continue;
+    }
 
-      const detail = await res.text().catch(() => "");
-      lastError = `[${res.status}] ${detail.slice(0, 200)}`;
-      lastStatus = res.status;
-      console.warn(
-        `[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`
+    const modelList = isVision ? cfg.modelsVision : cfg.modelsText;
+    if (process.env.NODE_ENV !== "production") {
+      console.log(
+        `[chat] provider: ${providerName} · ${cfg.apiKeys.length} key · kandidat: ${modelList.join(", ")}`
       );
-      if (res.status === 401 || res.status === 403) break;
-    } catch (err: any) {
-      if (err?.name === "AbortError") throw err;
-      lastError = `[network] ${err?.message ?? "unknown"}`;
-      console.warn(`[chat] model "${model}" error jaringan: ${err?.message}`);
+    }
+
+    for (const model of modelList) {
+      for (let i = 0; i < cfg.apiKeys.length; i++) {
+        const apiKey = cfg.apiKeys[i];
+        const keyLabel = `${providerName}[key-${i + 1}/${cfg.apiKeys.length}]`;
+
+        try {
+          const res = await fetch(cfg.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+              ...(cfg.extraHeaders ?? {}),
+            },
+            body: JSON.stringify({ ...payloadBase, model }),
+            signal: req.signal,
+          });
+
+          if (res.ok && res.body) {
+            upstream = res;
+            usedModel = model;
+            usedProvider = `${providerName}#${i + 1}`;
+            if (process.env.NODE_ENV !== "production") {
+              console.log(`[chat] ✅ sukses dengan ${keyLabel} · ${model}`);
+            }
+            break outerLoop;
+          }
+
+          const detail = await res.text().catch(() => "");
+          lastError = `[${keyLabel}/${model}] ${res.status} ${detail.slice(0, 150)}`;
+          lastStatus = res.status;
+          if (process.env.NODE_ENV !== "production") {
+            console.warn(
+              `[chat] ❌ ${keyLabel}/${model} gagal: ${res.status} — ${detail.slice(0, 300)}`
+            );
+          }
+          // 401/403 = key salah → coba key berikutnya
+          // 429 = rate limit → coba key berikutnya
+          // Error lain → coba key berikutnya juga (biar maksimal)
+          continue;
+        } catch (err: any) {
+          if (err?.name === "AbortError") throw err;
+          lastError = `[${keyLabel}/${model}] network: ${err?.message ?? "unknown"}`;
+          if (process.env.NODE_ENV !== "production") {
+            console.warn(`[chat] ⚠️ ${keyLabel}/${model} error: ${err?.message}`);
+          }
+        }
+      }
     }
   }
 
   if (!upstream || !upstream.body) {
-    let userMessage = "Semua model gagal. Coba lagi nanti.";
+    // 🔒 Log detail HANYA ke server, tidak terlihat user
+    console.error("[chat] semua model gagal:", lastError);
+
+    // 🔒 Pesan generik untuk user — tidak bocorkan provider, key, atau status
+    let userMessage = "Maaf, layanan sedang sibuk. Coba lagi sebentar lagi.";
     if (lastStatus === 429)
-      userMessage = "Kuota gratis sedang penuh. Tunggu sebentar.";
+      userMessage = "Terlalu banyak permintaan. Tunggu sebentar ya.";
     if (lastStatus === 0)
-      userMessage = "Koneksi ke provider AI gagal. Coba lagi.";
+      userMessage = "Koneksi bermasalah. Cek internetmu dan coba lagi.";
+
     return new Response(
-      JSON.stringify({
-        error: "upstream",
-        status: lastStatus,
-        detail: lastError || userMessage,
-      }),
+      JSON.stringify({ error: userMessage }),
       { status: 502, headers: { "Content-Type": "application/json" } }
     );
   }
@@ -300,9 +269,8 @@ export async function POST(req: NextRequest) {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
-      "X-Model-Used": usedModel,
-      "X-Provider-Used": process.env.AI_PROVIDER ?? "gemini",
-      "X-Mode": isVision ? "vision" : isUI ? "ui" : "text",
+      // 🔒 Header X-Model-Used, X-Provider-Used, X-Mode DIHAPUS
+      // agar user tidak bisa lihat backend pakai provider/model apa
     },
   });
 }
