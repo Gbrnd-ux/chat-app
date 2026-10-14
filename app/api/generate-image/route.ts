@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { rewriteImagePrompt } from "@/lib/prompts";
+import { rewriteImagePrompt } from "@/lib/image-prompt";
 import { runEnvCheckOnce } from "@/lib/env-check";
 export const maxDuration = 60;
 runEnvCheckOnce();
