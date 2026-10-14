@@ -27,14 +27,9 @@ function hasImage(content: MsgContent): boolean {
   return content.some((part) => part.type === "image_url" && part.image_url?.url);
 }
 
-/**
- * Deteksi apakah user meminta UI (Prompt-to-UI).
- * Menggunakan kombinasi kata kunci, bukan hanya panjang teks.
- */
 function isUIRequest(text: string): boolean {
   const t = text.toLowerCase();
 
-  // Kata kunci yang menandakan UI (bukan sekadar "buat")
   const uiKeywords = [
     "landing page", "ui", "ux", "html", "css", "tailwind",
     "komponen", "component", "halaman", "page", "website",
@@ -47,7 +42,6 @@ function isUIRequest(text: string): boolean {
     "resume", "cv", "profile", "profil",
   ];
 
-  // Kata kerja aksi yang mengindikasikan "generate/buat"
   const actionKeywords = [
     "buatkan", "buat", "create", "generate", "design", "rancang", "bikin",
   ];
@@ -55,19 +49,15 @@ function isUIRequest(text: string): boolean {
   const hasUIKeyword = uiKeywords.some((kw) => t.includes(kw));
   const hasActionKeyword = actionKeywords.some((kw) => t.includes(kw));
 
-  // Rule 1: Ada kata kunci UI + action verb → UI request
   if (hasUIKeyword && hasActionKeyword) return true;
 
-  // Rule 2: Ada ≥3 kata kunci UI → UI request (meski tanpa action verb)
   const uiKeywordCount = uiKeywords.filter((kw) => t.includes(kw)).length;
   if (uiKeywordCount >= 3) return true;
 
-  // Rule 3: Struktur prompt khas UI (bullet points + "fitur")
   if (t.includes("fitur:") && (t.includes("-") || t.includes("•"))) {
     return hasUIKeyword;
   }
 
-  // Rule 4: Follow-up singkat di chat UI ("buatkan ui-nya", "lanjut", "generate")
   if (
     t.length < 40 &&
     (t.includes("ui") || t.includes("generate") || t.includes("lanjut"))
@@ -182,7 +172,6 @@ export async function POST(req: NextRequest) {
   const isUI = !isVision && isUIRequest(lastContentText);
   const modelList = isVision ? cfg.modelsVision : cfg.modelsText;
 
-  // Debug log
   if (process.env.NODE_ENV !== "production") {
     console.log(
       `[chat] isUIRequest("${lastContentText.slice(0, 60)}...") = ${isUI}`
@@ -200,10 +189,7 @@ export async function POST(req: NextRequest) {
       ? uiGeneratorSystemPrompt()
       : chatSystemPrompt();
 
-  // 🔥 Saat mode UI, kirim HANYA user message terakhir.
-  // Ini mencegah AI "terjebak" mengikuti pola percakapan sebelumnya
-  // (misal: turn sebelumnya dibalas teks penjelasan, lalu turn berikutnya
-  //  juga ikut balas teks, padahal user minta generate UI).
+  // Saat mode UI, kirim HANYA user message terakhir
   const messagesToSend = isUI
     ? [{ role: last.role, content: last.content }]
     : messages;
@@ -211,6 +197,8 @@ export async function POST(req: NextRequest) {
   const payloadBase = {
     stream: true,
     temperature: isVision ? 0.2 : isUI ? 0.1 : 0.7,
+    // 🔥 max_tokens lebih besar untuk UI (HTML panjang)
+    max_tokens: isUI ? 8192 : 4096,
     messages: [
       { role: "system", content: systemPrompt },
       ...messagesToSend,
@@ -223,36 +211,44 @@ export async function POST(req: NextRequest) {
   let lastStatus = 0;
 
   for (const model of modelList) {
-    const res = await fetch(cfg.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
-        ...(cfg.extraHeaders ?? {}),
-      },
-      body: JSON.stringify({ ...payloadBase, model }),
-      signal: req.signal,
-    });
+    try {
+      const res = await fetch(cfg.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.apiKey}`,
+          ...(cfg.extraHeaders ?? {}),
+        },
+        body: JSON.stringify({ ...payloadBase, model }),
+        signal: req.signal,
+      });
 
-    if (res.ok && res.body) {
-      upstream = res;
-      usedModel = model;
-      break;
+      if (res.ok && res.body) {
+        upstream = res;
+        usedModel = model;
+        break;
+      }
+
+      const detail = await res.text().catch(() => "");
+      lastError = `[${res.status}] ${detail.slice(0, 200)}`;
+      lastStatus = res.status;
+      console.warn(
+        `[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`
+      );
+      if (res.status === 401 || res.status === 403) break;
+    } catch (err: any) {
+      if (err?.name === "AbortError") throw err;
+      lastError = `[network] ${err?.message ?? "unknown"}`;
+      console.warn(`[chat] model "${model}" error jaringan: ${err?.message}`);
     }
-
-    const detail = await res.text().catch(() => "");
-    lastError = `[${res.status}] ${detail}`;
-    lastStatus = res.status;
-    console.warn(
-      `[chat] model "${model}" gagal: ${res.status}. Coba berikutnya…`
-    );
-    if (res.status === 401 || res.status === 403) break;
   }
 
   if (!upstream || !upstream.body) {
     let userMessage = "Semua model gagal. Coba lagi nanti.";
     if (lastStatus === 429)
       userMessage = "Kuota gratis sedang penuh. Tunggu sebentar.";
+    if (lastStatus === 0)
+      userMessage = "Koneksi ke provider AI gagal. Coba lagi.";
     return new Response(
       JSON.stringify({
         error: "upstream",
