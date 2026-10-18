@@ -224,17 +224,26 @@ export const MessageBubble = memo(function MessageBubble({
           {isUser && message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {message.attachments.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => openLightbox(a.dataUrl, a.name)}
-                  className="block rounded-lg overflow-hidden border border-white/20 hover:opacity-90"
-                >
-                  <img
-                    src={a.dataUrl}
-                    alt={a.name ?? "gambar"}
-                    className="max-h-48 max-w-[240px] object-cover"
-                  />
-                </button>
+                // 🔥 PERBAIKAN: Jika gambar render img, jika dokumen render icon
+                a.type === "image" && a.dataUrl ? (
+                  <button
+                    key={a.id}
+                    onClick={() => openLightbox(a.dataUrl, a.name)}
+                    className="block rounded-lg overflow-hidden border border-white/20 hover:opacity-90"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={a.dataUrl}
+                      alt={a.name ?? "gambar"}
+                      className="max-h-48 max-w-[240px] object-cover"
+                    />
+                  </button>
+                ) : (
+                  <div key={a.id} className="flex items-center gap-2 p-2 bg-black/20 rounded-lg border border-white/20 text-sm">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    <span className="truncate max-w-[150px]">{a.name}</span>
+                  </div>
+                )
               ))}
             </div>
           )}
@@ -325,7 +334,6 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {/* 👇 ARTIFACT CHIP: Kartu kecil untuk buka panel kanan */}
           {hasUI && (
             <button
               onClick={() => onOpenArtifact?.(message.id)}

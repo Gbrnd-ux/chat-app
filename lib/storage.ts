@@ -1,7 +1,6 @@
 export type Attachment = {
   id: string;
-  type: "image";
-  mimeType: string;
+type: "image" | "document";  mimeType: string;
   dataUrl: string;
   name?: string;
   size?: number;
