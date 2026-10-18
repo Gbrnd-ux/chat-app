@@ -43,6 +43,11 @@ function hasImage(content: MsgContent): boolean {
 // 🔥 Fungsi RAG dengan Sistem Fallback Ganda
 async function getRagContext(query: string) {
   try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
     const keysString = process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "";
     const apiKeys = keysString.split(",").map((k) => k.trim()).filter(Boolean);
     if (apiKeys.length === 0) return "";
@@ -50,7 +55,6 @@ async function getRagContext(query: string) {
     let embedData = null;
     let success = false;
 
-    // 1. Coba gunakan Embedding API
     for (const key of apiKeys) {
       const embedRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${key}`,
@@ -72,24 +76,31 @@ async function getRagContext(query: string) {
       }
     }
 
-    // 🔥 FALLBACK 1: Jika semua API Key limit, ambil 5 dokumen langsung tanpa Embedding
+    // FALLBACK 1: Jika limit, ambil 5 dokumen PALING BARU (ID terbesar)
     if (!success || !embedData.embedding) {
-      console.warn("⚠️ [RAG] Embedding API gagal/limit. Fallback ke ambil dokumen langsung...");
-      const { data: docs } = await supabase.from('documents').select('content').limit(5);
+      console.warn("⚠️ [RAG] Embedding API gagal. Fallback ke dokumen TERBARU...");
+      const { data: docs } = await supabase
+        .from('documents')
+        .select('content')
+        .order('id', { ascending: false }) // 🔥 Ambil yang terbaru!
+        .limit(5);
       return docs && docs.length > 0 ? docs.map((d: any) => d.content).join("\n\n---\n\n") : "";
     }
 
-    // 2. Cari kemiripan di Supabase
     const { data: documents, error } = await supabase.rpc("match_documents", {
       query_embedding: embedData.embedding.values,
-      match_threshold: 0.0, 
+      match_threshold: 0.1, // Threshold normal
       match_count: 5,
     });
 
-    // 🔥 FALLBACK 2: Jika pencarian vektor kosong, ambil dokumen langsung
+    // FALLBACK 2: Jika vektor tidak nemu, ambil 5 dokumen PALING BARU
     if (error || !documents || documents.length === 0) {
-      console.warn("⚠️ [RAG] Tidak ada dokumen cocok. Fallback ke ambil dokumen langsung...");
-      const { data: docs } = await supabase.from('documents').select('content').limit(5);
+      console.warn("⚠️ [RAG] Vektor kosong. Fallback ke dokumen TERBARU...");
+      const { data: docs } = await supabase
+        .from('documents')
+        .select('content')
+        .order('id', { ascending: false }) // 🔥 Ambil yang terbaru!
+        .limit(5);
       return docs && docs.length > 0 ? docs.map((d: any) => d.content).join("\n\n---\n\n") : "";
     }
 
@@ -97,8 +108,7 @@ async function getRagContext(query: string) {
     return documents.map((doc: any) => doc.content).join("\n\n---\n\n");
   } catch (error) {
     console.error("❌ [RAG] Catch Error:", error);
-    const { data: docs } = await supabase.from('documents').select('content').limit(5);
-    return docs && docs.length > 0 ? docs.map((d: any) => d.content).join("\n\n---\n\n") : "";
+    return "";
   }
 }
 

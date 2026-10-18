@@ -41,3 +41,5 @@ api-keys.txt
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
