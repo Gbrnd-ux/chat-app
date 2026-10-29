@@ -1,4 +1,4 @@
-﻿// app/api/chat/route.ts
+// app/api/chat/route.ts
 import { NextRequest } from "next/server";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
@@ -40,6 +40,19 @@ function hasImage(content: MsgContent): boolean {
   return content.some((part) => part.type === "image_url" && part.image_url?.url);
 }
 
+function isGreetingOrCasual(text: string): boolean {
+  const clean = text.trim().toLowerCase();
+  if (clean.length < 2) return true;
+  const words = clean.split(/\s+/);
+  if (words.length <= 3) {
+    const greetings = /^(halo|hai|hi|hello|hey|hei|p|tes|test|pagi|siang|sore|malam|terima\s*kasih|makasih|thanks|thank\s*you|ok|oke|siap|oi|oy)$/i;
+    if (words.some((w) => greetings.test(w))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // 🔥 Fungsi RAG dengan Sistem Fallback Ganda
 async function getRagContext(query: string) {
   try {
@@ -76,35 +89,24 @@ async function getRagContext(query: string) {
       }
     }
 
-    // FALLBACK 1: Jika limit, ambil 5 dokumen PALING BARU (ID terbesar)
-    if (!success || !embedData.embedding) {
-      console.warn("⚠️ [RAG] Embedding API gagal. Fallback ke dokumen TERBARU...");
-      const { data: docs } = await supabase
-        .from('documents')
-        .select('content')
-        .order('id', { ascending: false }) // 🔥 Ambil yang terbaru!
-        .limit(5);
-      return docs && docs.length > 0 ? docs.map((d: any) => d.content).join("\n\n---\n\n") : "";
+    if (!success || !embedData?.embedding?.values) {
+      return "";
     }
 
     const { data: documents, error } = await supabase.rpc("match_documents", {
       query_embedding: embedData.embedding.values,
-      match_threshold: 0.1, // Threshold normal
+      match_threshold: 0.35, // Hanya ambil dokumen yang benar-benar relevan
       match_count: 5,
     });
 
-    // FALLBACK 2: Jika vektor tidak nemu, ambil 5 dokumen PALING BARU
     if (error || !documents || documents.length === 0) {
-      console.warn("⚠️ [RAG] Vektor kosong. Fallback ke dokumen TERBARU...");
-      const { data: docs } = await supabase
-        .from('documents')
-        .select('content')
-        .order('id', { ascending: false }) // 🔥 Ambil yang terbaru!
-        .limit(5);
-      return docs && docs.length > 0 ? docs.map((d: any) => d.content).join("\n\n---\n\n") : "";
+      if (process.env.NODE_ENV !== "production") {
+        console.log("ℹ️ [RAG] Tidak ada dokumen yang cocok dengan pertanyaan ini.");
+      }
+      return "";
     }
 
-    console.log(`✅ [RAG] Ditemukan ${documents.length} potongan dokumen via Vektor!`);
+    console.log(`✅ [RAG] Ditemukan ${documents.length} potongan dokumen relevan via Vektor!`);
     return documents.map((doc: any) => doc.content).join("\n\n---\n\n");
   } catch (error) {
     console.error("❌ [RAG] Catch Error:", error);
@@ -201,19 +203,22 @@ export async function POST(req: NextRequest) {
           timeZone: "Asia/Jakarta",
         });
 
-  // 🔥 PANGGIL RAG
-  if (!isVision && !isUI && lastContentText.length > 0) {
+  // 🔥 PANGGIL RAG (hanya jika bukan vision, bukan UI, dan bukan sapaan santai)
+  const isCasualGreeting = isGreetingOrCasual(lastContentText);
+  if (!isVision && !isUI && !isCasualGreeting && lastContentText.length > 0) {
     const ragContext = await getRagContext(lastContentText);
     
     if (ragContext) {
-      systemPrompt += `\n\n=== INFORMASI DARI DOKUMEN USER ===\n${ragContext}\n===================================\n\nINSTRUKSI PENTING: Jawablah pertanyaan user HANYA berdasarkan "INFORMASI DARI DOKUMEN USER" di atas. Abaikan instruksi lain yang bertentangan. Jika informasi benar-benar tidak ada di dokumen, barulah katakan bahwa informasi tersebut tidak ditemukan.`;
+      systemPrompt += `\n\n=== INFORMASI DARI DOKUMEN USER (REFERENSI RELEVAN) ===\n${ragContext}\n=======================================================\n\nPETUNJUK PENGGUNAAN DOKUMEN:
+- Jika pertanyaan user berkaitan dengan isi dokumen di atas, jadikan informasi tersebut sebagai rujukan utama.
+- Jika pertanyaan user bersifat umum (pengetahuan umum, sapaan, coding, identitas AI, dsb.) atau jawabannya tidak ada di dokumen, jawablah secara luwes, cerdas, dan akurat menggunakan pengetahuan umum Anda. Jangan kaku menolak menjawab hanya karena topiknya tidak ada di dokumen.`;
       
       if (process.env.NODE_ENV !== "production") {
-        console.log("[chat] ✅ RAG Context disisipkan ke System Prompt!");
+        console.log("[chat] ✅ RAG Context relevan disisipkan ke System Prompt!");
       }
     } else {
       if (process.env.NODE_ENV !== "production") {
-        console.log("[chat] ⚠️ RAG Context kosong.");
+        console.log("[chat] ℹ️ Tanpa RAG Context (menjawab dengan pengetahuan umum).");
       }
     }
   }

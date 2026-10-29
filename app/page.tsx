@@ -7,7 +7,9 @@ import { ArtifactPanel } from "@/components/chat/ArtifactPanel";
 import { Composer, ComposerMode, AspectRatio, DocType } from "@/components/chat/Composer";
 import { EmptyState } from "@/components/chat/EmptyState";
 import { showToast } from "@/lib/toast";
-import { Attachment, Conversation, ChatMessage, loadAll, upsert, remove, newId } from "@/lib/storage";
+import { Attachment, Conversation, ChatMessage, newId } from "@/lib/storage";
+import { createClient } from "@/lib/supabase/client";
+import { getUserChats, getChatById, saveChatToSupabase, deleteChatFromSupabase, resolveChatId } from "@/lib/chat-service";
 import { extractHtml, isCompleteHtml } from "@/lib/ui-output";
 import {
   checkDocClarification,
@@ -159,9 +161,41 @@ export default function Home() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const videoPollRef = useRef<number | null>(null);
 
+  const [user, setUser] = useState<any>(null);
+  const userRef = useRef<any>(null);
+  useEffect(() => { userRef.current = user; }, [user]);
+
   const activeIdRef = useRef<string>(activeId);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
-  useEffect(() => { setConvs(loadAll()); }, []);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setUser(user);
+        getUserChats(user.id).then((chats) => {
+          setConvs(chats);
+        });
+      }
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        getUserChats(session.user.id).then((chats) => {
+          setConvs(chats);
+        });
+      } else {
+        setUser(null);
+        setConvs([]);
+      }
+    });
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     return () => {
       if (videoPollRef.current) clearTimeout(videoPollRef.current);
@@ -201,14 +235,51 @@ export default function Home() {
 
   const persist = useCallback((msgs: ChatMessage[], id: string) => {
     if (!id) return;
+    const resolvedId = resolveChatId(id);
     const firstUser = msgs.find((m) => m.role === "user");
     const title = firstUser?.content.slice(0, 40) || (firstUser?.attachments?.length ? "Analisis gambar" : "Baru");
-    const conv: Conversation = { id, title, updatedAt: Date.now(), messages: msgs };
-    upsert(conv);
-    setConvs(loadAll());
+    const conv: Conversation = { id: resolvedId, title, updatedAt: Date.now(), messages: msgs };
+
+    setConvs((prev) => {
+      const idx = prev.findIndex((c) => c.id === resolvedId || c.id === id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = conv;
+        return next;
+      }
+      return [conv, ...prev];
+    });
+
+    const currentUser = userRef.current;
+    if (currentUser?.id) {
+      saveChatToSupabase(currentUser.id, id, title, msgs).then((dbId) => {
+        if (dbId) {
+          if (activeIdRef.current === id || activeIdRef.current === resolvedId) {
+            setActiveId(dbId);
+            activeIdRef.current = dbId;
+          }
+          setConvs((prev) => {
+            const exists = prev.some((c) => c.id === dbId);
+            if (exists) {
+              return prev
+                .filter((c) => c.id !== id || id === dbId)
+                .map((c) => (c.id === dbId ? { ...c, title, messages: msgs, updatedAt: Date.now() } : c));
+            }
+            return prev.map((c) => (c.id === id ? { ...c, id: dbId } : c));
+          });
+        }
+      });
+    }
   }, []);
 
-  const stillHere = (conversationId: string) => activeIdRef.current === conversationId;
+  const stillHere = (conversationId: string) => {
+    const cur = activeIdRef.current;
+    if (cur === conversationId) return true;
+    if (resolveChatId(conversationId) === cur) return true;
+    if (resolveChatId(cur) === conversationId) return true;
+    if (resolveChatId(conversationId) === resolveChatId(cur)) return true;
+    return false;
+  };
 
   /* ============================================================ */
   /* CHAT STREAMING                                                */
@@ -374,6 +445,7 @@ export default function Home() {
 
         if (stillHere(conversationId)) {
           setStreamingId(null);
+          setTyping(false);
           setMessages(finalMsgs);
         }
       } catch (err: any) {
@@ -413,7 +485,11 @@ export default function Home() {
         }
       } finally {
         abortRef.current = null;
-        if (stillHere(conversationId)) composerRef.current?.focus();
+        if (stillHere(conversationId)) {
+          setTyping(false);
+          setStreamingId(null);
+          composerRef.current?.focus();
+        }
       }
     },
     [persist]
@@ -834,18 +910,38 @@ const generateDocument = async (prompt: string, conversationId: string) => {
     runStream(trimmed, conversationId);
   };
 
-  const selectConv = (id: string) => {
+  const selectConv = async (id: string) => {
     cancelAll();
-    const c = convs.find((x) => x.id === id);
+    const resolvedId = resolveChatId(id);
+    let c = convs.find((x) => x.id === resolvedId || x.id === id);
+
+    if (!c || !c.messages || c.messages.length === 0) {
+      const detail = await getChatById(resolvedId);
+      if (detail) {
+        const loadedConv: Conversation = {
+          id: String(detail.id),
+          title: detail.title || "Tanpa judul",
+          updatedAt: detail.created_at ? new Date(detail.created_at).getTime() : Date.now(),
+          messages: detail.messages || [],
+        };
+        c = loadedConv;
+        setConvs((prev) => {
+          const filtered = prev.filter((item) => item.id !== id && item.id !== String(detail.id));
+          return [loadedConv, ...filtered];
+        });
+      }
+    }
+
     if (!c) return;
-    setActiveId(id);
-    activeIdRef.current = id;
-    setMessages(c.messages);
+
+    setActiveId(c.id);
+    activeIdRef.current = c.id;
+    setMessages(c.messages || []);
     setInput("");
     setAttachments([]);
     setMode("chat");
 
-    const lastUI = [...c.messages].reverse().find((m) => m.generatedUI);
+    const lastUI = [...(c.messages || [])].reverse().find((m) => m.generatedUI);
     if (lastUI) {
       setActiveArtifactId(lastUI.id);
       setArtifactOpen(true);
@@ -855,10 +951,16 @@ const generateDocument = async (prompt: string, conversationId: string) => {
     }
   };
 
-  const deleteConv = (id: string) => {
-    remove(id);
-    setConvs(loadAll());
-    if (id === activeId) {
+  const deleteConv = async (id: string) => {
+    const resolvedId = resolveChatId(id);
+    await deleteChatFromSupabase(resolvedId);
+    setConvs((prev) => prev.filter((c) => c.id !== id && c.id !== resolvedId));
+    if (
+      id === activeId ||
+      resolvedId === activeId ||
+      id === activeIdRef.current ||
+      resolvedId === activeIdRef.current
+    ) {
       cancelAll();
       setActiveId("");
       activeIdRef.current = "";
@@ -881,6 +983,7 @@ const generateDocument = async (prompt: string, conversationId: string) => {
         <Sidebar
           items={convs}
           activeId={activeId}
+          userEmail={user?.email}
           onNew={startNew}
           onSelect={selectConv}
           onDelete={deleteConv}
@@ -897,6 +1000,7 @@ const generateDocument = async (prompt: string, conversationId: string) => {
             <Sidebar
               items={convs}
               activeId={activeId}
+              userEmail={user?.email}
               onNew={() => { startNew(); setSidebarOpen(false); }}
               onSelect={(id) => { selectConv(id); setSidebarOpen(false); }}
               onDelete={deleteConv}

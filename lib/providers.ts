@@ -31,20 +31,18 @@ export function getProviderConfig(provider: ProviderName): ProviderConfig | null
         apiKeys: parseKeys(
           process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY
         ),
-        // 🔥 UPDATE: 3.5 Flash-Lite jadi prioritas utama karena lebih stabil.
+        // 🔥 PRIORITAS: Gemini 3.5 Flash (Pintar, data up-to-date 2024-2029, respons cepat & akurat)
         modelsText: withOverride([
-          "gemini-3.5-flash-lite",     // ← PRIORITAS UTAMA BARU (lebih stabil)
-          "gemini-3.5-flash",          // ← Prioritas kedua (coba lagi, mungkin sudah longgar)
-          "gemini-3.1-flash-lite",
-          "gemini-2.5-flash-lite",
-          "gemini-flash-lite-latest",
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.7-flash",
+          "gemini-2.5-flash",
         ]),
         modelsVision: withOverride([
-          "gemini-3.5-flash-lite",     // ← Sama untuk vision
           "gemini-3.5-flash",
-          "gemini-3.1-flash-lite",
-          "gemini-2.5-flash-lite",
-          "gemini-flash-lite-latest",
+          "gemini-3.5-flash-lite",
+          "gemini-3.7-flash",
+          "gemini-2.5-flash",
         ]),
       };
 

@@ -13,6 +13,7 @@
     "@ai-sdk/openai": "^4.0.91",
     "@gradio/client": "^2.7.1",
     "@monaco-editor/react": "^4.7.0",
+    "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.118.0",
     "ai": "^7.0.143",
     "docx": "^9.10.0",
